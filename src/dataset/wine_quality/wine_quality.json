@@ -1,0 +1,24 @@
+{
+    "X": {
+        "fixed acidity": {"type": "float", "range": [0.0, 20.0]},
+        "volatile acidity": {"type": "float", "range": [0.0, 2.0]},
+        "citric acid": {"type": "float", "range": [0.0, 2.0]},
+        "residual sugar": {"type": "float", "range": [0.0, 100.0]},
+        "chlorides": {"type": "float", "range": [0.0, 1.0]},
+        "free sulfur dioxide": {"type": "float", "range": [0, 300]},
+        "total sulfur dioxide": {"type": "float", "range": [0, 500]},
+        "density": {"type": "float", "range": [0.1, 2.0]},
+        "pH": {"type": "float", "range": [1.0, 7.0]},
+        "sulphates": {"type": "float", "range": [0.0, 3.0]},
+        "alcohol": {"type": "float", "range": [0.0, 20.0]},
+        "type": {
+            "type": "category",
+            "categories": ["white", "red"]
+        }
+    },
+    "y": {
+        "name": "quality",
+        "type": "category",
+        "categories": ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"]
+    }
+}

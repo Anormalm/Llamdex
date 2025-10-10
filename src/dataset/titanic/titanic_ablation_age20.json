@@ -1,0 +1,32 @@
+{
+    "X": {
+        "Age": {
+            "type": "int",
+            "range": [0, 20]
+        },
+        "Fare": {
+            "type": "float",
+            "range": [0, 600]
+        },
+        "Parents/Children Aboard": {
+            "type": "int",
+            "range": [0, 10]
+        },
+        "Pclass": {
+            "type": "category",
+            "categories": [1, 2, 3]
+        },
+        "Sex": {
+            "type": "category",
+            "categories": ["male", "female"]
+        },
+        "Siblings/Spouses Aboard": {
+            "type": "int",
+            "range": [0, 10]
+        }
+    },
+    "y": {
+        "name": "Survived",
+        "type": "bool"
+    }
+} 

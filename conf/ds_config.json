@@ -1,0 +1,25 @@
+{
+    "train_batch_size": "auto",
+    "train_micro_batch_size_per_gpu": "auto",
+    "gradient_accumulation_steps": "auto",
+    "zero_optimization": {
+        "stage": 2,
+        "offload_optimizer": {
+            "device": "none",
+            "nvme_path": null
+        },
+        "offload_param": {
+            "device": "none",
+            "nvme_path": null
+        },
+        "stage3_gather_16bit_weights_on_model_save": false
+    },
+    "gradient_clipping": 1.0,
+    "bf16": {
+        "enabled": true
+    },
+    "fp16": {
+        "enabled": false
+    },
+    "zero_allow_untested_optimizer": true
+}

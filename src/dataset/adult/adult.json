@@ -1,0 +1,69 @@
+{
+    "X": {
+        "age": {"type": "int", "range": [17, 100]},
+        "capital-gain": {"type": "int", "range": [0, 100000]},
+        "capital-loss": {"type": "int", "range": [0, 100000]},
+        "education-num": {"type": "int", "range": [1, 16]},
+        "education": {
+            "type": "category",
+            "categories": [
+                "10th", "11th", "12th", "1st-4th", "5th-6th", "7th-8th", "9th", "Assoc-acdm",
+                "Assoc-voc", "Bachelors", "Doctorate", "HS-grad", "Masters", "Preschool",
+                "Prof-school", "Some-college"
+            ]
+        },
+        "fnlwgt": {"type": "int", "range": [0, 2000000]},
+        "hours-per-week": {"type": "int", "range": [0, 100]},
+        "marital-status": {
+            "type": "category",
+            "categories": [
+                "Divorced", "Married-AF-spouse", "Married-civ-spouse",
+                "Married-spouse-absent", "Never-married", "Separated",
+                "Widowed"
+            ]
+        },
+        "native-country": {
+            "type": "category",
+            "categories": [
+                "Cambodia", "Canada", "China", "Columbia", "Cuba", "Dominican-Republic",
+                "Ecuador", "El-Salvador", "England", "France", "Germany", "Greece",
+                "Guatemala", "Haiti", "Holand-Netherlands", "Honduras", "Hong", "Hungary",
+                "India", "Iran", "Ireland", "Italy", "Jamaica", "Japan", "Laos", "Mexico",
+                "Nicaragua", "Outlying-US(Guam-USVI-etc)", "Peru", "Philippines", "Poland",
+                "Portugal", "Puerto-Rico", "Scotland", "South", "Taiwan", "Thailand",
+                "Trinadad&Tobago", "United-States", "Vietnam", "Yugoslavia"
+            ]
+        },
+        "occupation": {
+            "type": "category",
+            "categories": [
+                "Adm-clerical", "Armed-Forces", "Craft-repair", "Exec-managerial",
+                "Farming-fishing", "Handlers-cleaners", "Machine-op-inspct", "Other-service",
+                "Priv-house-serv", "Prof-specialty", "Protective-serv", "Sales", "Tech-support",
+                "Transport-moving"
+            ]
+        },
+        "race": {
+            "type": "category",
+            "categories": [
+                "Amer-Indian-Eskimo", "Asian-Pac-Islander", "Black", "Other", "White"
+            ]
+        },
+        "relationship": {
+            "type": "category",
+            "categories": [
+                "Husband", "Not-in-family", "Other-relative", "Own-child", "Unmarried",
+                "Wife"
+            ]
+        },
+        "sex": {"type": "category", "categories": ["Female", "Male"]},
+        "workclass": {
+            "type": "category",
+            "categories": [
+                "Federal-gov", "Local-gov", "Never-worked", "Private", "Self-emp-inc",
+                "Self-emp-not-inc", "State-gov", "Without-pay"
+            ]
+        }
+    },
+    "y": {"name": "salary>50K", "type": "bool"}
+}

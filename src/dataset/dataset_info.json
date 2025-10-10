@@ -1,0 +1,38 @@
+{
+  "adult": {
+    "system_prompt": "Respond the user's question in only one word: Yes or No.",
+    "answer_column": "salary>50K",
+    "expert_input_size": 105,
+    "expert_output_size": 1
+  },
+  "titanic": {
+    "system_prompt": "Respond the user's question in only one word: Yes or No.",
+    "answer_column": "Survived",
+    "expert_input_size": 9,
+    "expert_output_size": 1
+  },
+  "bank_marketing": {
+    "system_prompt": "Respond the user's question in only one word: Yes or No.",
+    "answer_column": "subscribed",
+    "expert_input_size": 51,
+    "expert_output_size": 1
+  },
+  "wine_quality": {
+    "system_prompt": "Respond the user's question in only one word: A, B, C, D, E, F, G, H, I, J, K.",
+    "answer_column": "quality",
+    "expert_input_size": 13,
+    "expert_output_size": 11
+  },
+  "abalone": {
+    "system_prompt": "Respond the user's question in only one word: A, B, C. Representing the abalone's age group, where A is youngest and C is oldest.",
+    "answer_column": "Age_Group",
+    "expert_input_size": 10,
+    "expert_output_size": 3
+  },
+  "nursery": {
+    "system_prompt": "Respond the user's question in only one letter: A, B, C, D, where A is highest rating and D is lowest.",
+    "answer_column": "evaluation",
+    "expert_input_size": 27,
+    "expert_output_size": 4
+  }
+}

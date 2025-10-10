@@ -1,0 +1,41 @@
+{
+  "X": {
+    "parents": {
+      "type": "category",
+      "categories": ["usual", "pretentious", "great_pret"]
+    },
+    "has_nurs": {
+      "type": "category",
+      "categories": ["proper", "less_proper", "improper", "critical", "very_crit"]
+    },
+    "form": {
+      "type": "category",
+      "categories": ["complete", "completed", "incomplete", "foster"]
+    },
+    "children": {
+      "type": "category",
+      "categories": ["1", "2", "3", "more"]
+    },
+    "housing": {
+      "type": "category",
+      "categories": ["convenient", "less_conv", "critical"]
+    },
+    "finance": {
+      "type": "category",
+      "categories": ["convenient", "inconv"]
+    },
+    "social": {
+      "type": "category",
+      "categories": ["nonprob", "slightly_prob", "problematic"]
+    },
+    "health": {
+      "type": "category",
+      "categories": ["recommended", "priority", "not_recom"]
+    }
+  },
+    "y": {
+        "name": "evaluation",
+        "type": "category",
+        "categories": ["A", "B", "C", "D"]
+    }
+}

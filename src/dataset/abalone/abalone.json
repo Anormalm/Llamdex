@@ -1,0 +1,20 @@
+{
+    "X": {
+        "Sex": {
+            "type": "category",
+            "categories": ["M", "F", "I"]
+        },
+        "Length": {"type": "float", "range": [0.0, 1.0]},
+        "Diameter": {"type": "float", "range": [0.0, 1.0]},
+        "Height": {"type": "float", "range": [0.0, 1.0]},
+        "Whole weight": {"type": "float", "range": [0.0, 3.0]},
+        "Shucked weight": {"type": "float", "range": [0.0, 2.0]},
+        "Viscera weight": {"type": "float", "range": [0.0, 1.0]},
+        "Shell weight": {"type": "float", "range": [0.0, 2.0]}
+    },
+    "y": {
+        "name": "Age_Group",
+        "type": "category",
+        "categories": ["A", "B", "C"]
+    }
+}

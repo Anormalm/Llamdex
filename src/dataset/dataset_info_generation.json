@@ -1,0 +1,38 @@
+{
+  "adult": {
+    "system_prompt": "Please provide a thoughtful explanation for your answer. You may answer with a brief reasoning followed by 'Yes' or 'No'.",
+    "answer_column": "salary>50K",
+    "expert_input_size": 105,
+    "expert_output_size": 1
+  },
+  "titanic": {
+    "system_prompt": "Please provide a thoughtful explanation for your answer. You may answer with a brief reasoning followed by 'Yes' or 'No'.",
+    "answer_column": "Survived",
+    "expert_input_size": 9,
+    "expert_output_size": 1
+  },
+  "bank_marketing": {
+    "system_prompt": "Please provide a thoughtful explanation for your answer. You may answer with a brief reasoning followed by 'Yes' or 'No'.",
+    "answer_column": "subscribed",
+    "expert_input_size": 51,
+    "expert_output_size": 1
+  },
+  "wine_quality": {
+    "system_prompt": "Please provide a thoughtful explanation for your rating. You may explain your reasoning and then provide the quality rating (A through K).",
+    "answer_column": "quality",
+    "expert_input_size": 13,
+    "expert_output_size": 11
+  },
+  "abalone": {
+    "system_prompt": "Please provide a thoughtful explanation for your classification. You may explain your reasoning and then classify the age group (A for youngest, B for middle, C for oldest).",
+    "answer_column": "Age_Group",
+    "expert_input_size": 10,
+    "expert_output_size": 3
+  },
+  "nursery": {
+    "system_prompt": "Please provide a thoughtful explanation for your evaluation. You may explain your reasoning and then provide the rating (A for highest, B, C, or D for lowest).",
+    "answer_column": "evaluation",
+    "expert_input_size": 27,
+    "expert_output_size": 4
+  }
+} 

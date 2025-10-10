@@ -1,0 +1,62 @@
+# Editor and OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+*.whl
+
+# Environments
+.env
+.venv/
+env/
+venv/
+pip-wheel-metadata/
+
+# Build artifacts
+build/
+dist/
+
+# Experiment outputs
+cache/
+data/
+logs/
+log/
+runs/
+wandb/
+out/
+_log/
+_fig/
+model/
+checkpoints/
+*.ckpt
+*.pt
+*.bin
+*.log
+nohup.out
+*.tmp
+*.bak
+
+# Baseline run outputs
+baseline/**/outputs/
+baseline/**/wandb/
+baseline/**/runs/
+baseline/**/logs/
+
+# Secrets
+Nebius_APIkey
+*.env
+*.secrets
+
+# Notebook artifacts
+.ipynb_checkpoints/
