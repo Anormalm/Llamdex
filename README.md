@@ -1,5 +1,7 @@
 # Llamdex: Model-based Large Language Model Customization as Service
 
+This is the official repository of the EMNLP'25 (Main) paper: [Llamdex: Model-based Large Language Model Customization as Service](https://aclanthology.org/2025.emnlp-main.248.pdf).
+
 Llamdex provides a complete pipeline for customizing large language models to structured data domains. This release bundles training code, preprocessing utilities, analysis scripts, and reproducible baseline implementations so you can reproduce our experiments or adapt the workflow to new datasets.
 
 ## Repository Layout
