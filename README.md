@@ -80,6 +80,70 @@ Adjust hyperparameters via environment variables (see the script headers) or edi
 
 Use `src/analysis/` to regenerate plots and tables, including DP trade-off curves (`plot_dp.py`), expert ablations (`plot_ablation_expert_weight.py`), and membership inference studies (`mia_mico_style.py`). The utilities read logs produced by the runner scripts and emit publication-ready figures and LaTeX tables.
 
+## Llamdex-IMG: Image Classification Extension
+
+Llamdex-IMG extends Llamdex to image classification tasks using a late-fusion design. The vision expert (frozen ResNet-18) processes images once per sample, and its output is mapped via a trainable decoder to token embeddings that are injected into the LLM at a specified layer.
+
+### Quick Start
+
+1. **Install additional dependencies** (if not already installed):
+```bash
+pip install torchvision
+```
+
+2. **Train on CIFAR-10**:
+```bash
+python scripts/train_img.py \
+    --mistral_models_path model/llm \
+    --model_name mistralai/Mistral-7B-Instruct-v0.3 \
+    --num_tokens 10 \
+    --layer 0 \
+    --num_epochs 3 \
+    --batch_size 32
+```
+
+3. **Evaluate**:
+```bash
+# Llamdex-IMG
+python scripts/eval_img.py \
+    --model_state_dict model/llm/llamdex_img_cifar10/model_final.pt
+
+# Baselines
+python scripts/eval_img.py --baseline vision_only  # Vision-only classifier
+python scripts/eval_img.py --baseline llm_only     # LLM-only (no injection)
+python scripts/eval_img.py --baseline prompt       # Prompt baseline
+```
+
+### Ablation Studies
+
+The training and evaluation scripts support ablation studies via command-line flags:
+
+- `--layer`: Insertion layer k (default: 0)
+- `--num_tokens`: Number of injected tokens (1/4/8/16, default: 10)
+- `--vision_output`: Expert output mode (`logits` or `embedding`, default: `logits`)
+- `--alpha`: Scaling factor for injected embeddings (default: 1.0)
+
+Example:
+```bash
+python scripts/train_img.py --layer 5 --num_tokens 16 --vision_output embedding --alpha 0.5
+```
+
+### Architecture
+
+- **Frozen Vision Expert**: ResNet-18 pretrained on ImageNet, adapted for CIFAR-10 (32x32 images)
+- **Trainable Decoder**: Maps expert output (logits or embeddings) to `(num_tokens × hidden_size)` token embeddings
+- **Injection Mechanism**: Reuses existing Llamdex reserved token slots with Gaussian padding + LayerNorm
+- **Training**: Only the decoder is trainable; base LLM and vision expert remain frozen
+
+### Smoke Test
+
+Run a quick smoke test to verify the setup:
+```bash
+python tests/test_img_smoke.py
+```
+
+This runs 10 training steps on a tiny subset without requiring GPU.
+
 ## Baselines
 
 - `baseline/dp-opt`: Differentially private OPT fine-tuning with ready-to-run sweep configurations.
