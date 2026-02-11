@@ -144,6 +144,119 @@ python tests/test_img_smoke.py
 
 This runs 10 training steps on a tiny subset without requiring GPU.
 
+## Plan 1: Semantic Evidence Injection
+
+Plan 1 adds a unified multimodal evidence path:
+- `evidence vector z in R^D` built from either vision evidence or text descriptions
+- reserved-token overwrite injection at one chosen LLM layer `k`
+- frozen base LLM + frozen client expert, trainable connectors only
+
+### New package
+
+`src/multimodal/`:
+- `experts/`: frozen client expert loaders (`VisionClassifierExpert`, `VisionEmbeddingExpert`)
+- `evidence/`: `VisionEvidenceBuilder`, `TextEvidenceBuilder`, `PopulationStatsEvidenceBuilder`
+- `injection/`: `EvidenceProjector`, `SemanticEvidenceDomainExpert`
+- `data/`: CIFAR QA and population aggregation datasets
+- `tasks/`: prompt templates and answer parsing
+- `trainers/`, `eval/`: train/eval entry logic
+- `evidence/diffusion_builder.py`: Plan 2 placeholder (`NotImplementedError`)
+
+### Train / Eval CLI
+
+Single-image label-only, vision evidence:
+```bash
+python scripts/train_plan1.py \
+  --run_dir runs/plan1_label_vision \
+  --task_family single_image \
+  --evidence_source vision \
+  --qa_type label \
+  --expert_kind classifier \
+  --expert_output_mode logits \
+  --num_tokens 4 \
+  --layer 0
+```
+
+```bash
+python scripts/eval_plan1.py \
+  --task_family single_image \
+  --evidence_source vision \
+  --qa_type label \
+  --baseline injection \
+  --connectors_path runs/plan1_label_vision/best_connectors.pt
+```
+
+Description-only mode:
+```bash
+python scripts/train_plan1.py \
+  --run_dir runs/plan1_label_text \
+  --task_family single_image \
+  --evidence_source text \
+  --qa_type label \
+  --text_encoder_model_id distilroberta-base
+```
+
+```bash
+python scripts/eval_plan1.py \
+  --task_family single_image \
+  --evidence_source text \
+  --qa_type label \
+  --baseline injection \
+  --connectors_path runs/plan1_label_text/best_connectors.pt
+```
+
+Population aggregation mode (with optional summary-level noise):
+```bash
+python scripts/train_plan1.py \
+  --run_dir runs/plan1_population_sigma0 \
+  --task_family population \
+  --evidence_source vision \
+  --population_output_mode integer \
+  --population_sigma 0.0
+```
+
+```bash
+python scripts/eval_plan1.py \
+  --task_family population \
+  --evidence_source vision \
+  --population_output_mode integer \
+  --population_sigma 0.0 \
+  --baseline injection \
+  --connectors_path runs/plan1_population_sigma0/best_connectors.pt
+```
+
+```bash
+python scripts/train_plan1.py \
+  --run_dir runs/plan1_population_sigma01 \
+  --task_family population \
+  --evidence_source vision \
+  --population_output_mode integer \
+  --population_sigma 0.1
+```
+
+### Baselines
+
+`scripts/eval_plan1.py --baseline ...` supports:
+- `injection`
+- `vision_only`
+- `llm_only`
+- `text_prompt` (expert output appended in prompt text)
+
+### Ablation runner
+
+```bash
+python scripts/run_plan1_ablation.py \
+  --tokens_grid 1 4 8 16 \
+  --layers 0 8 16 24 \
+  --output_csv runs/plan1_ablation_summary.csv
+```
+
+### Smoke tests
+
+```bash
+python -m pytest -q tests/test_plan1_smoke.py tests/test_tabular_pipeline_smoke.py
+```
+
 ## Baselines
 
 - `baseline/dp-opt`: Differentially private OPT fine-tuning with ready-to-run sweep configurations.
