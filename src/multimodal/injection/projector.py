@@ -24,8 +24,8 @@ class EvidenceProjector(nn.Module):
         self.ln = nn.LayerNorm(hidden_size)
 
     def forward(self, z: torch.Tensor) -> torch.Tensor:
-        x = self.net(z.float())
+        z = z.to(dtype=self.net[0].weight.dtype)
+        x = self.net(z)
         x = x.view(z.size(0), self.num_tokens, self.hidden_size)
         x = self.ln(x)
         return self.alpha * x
-

@@ -9,6 +9,8 @@ from pathlib import Path
 def parse_args():
     p = argparse.ArgumentParser(description="Run Plan 1 ablations for num_tokens and injection layer")
     p.add_argument("--output_csv", type=str, default="runs/plan1_ablation_summary.csv")
+    p.add_argument("--mistral_models_path", type=str, default="model/llm")
+    p.add_argument("--model_name", type=str, default="mistralai/Mistral-7B-Instruct-v0.3")
     p.add_argument("--tokens_grid", type=int, nargs="+", default=[1, 4, 8, 16])
     p.add_argument("--layers", type=int, nargs="+", default=[0, 8, 16, 24])
     p.add_argument("--base_run_dir", type=str, default="runs/plan1_ablation")
@@ -29,6 +31,10 @@ def main():
             train_cmd = [
                 sys.executable,
                 "scripts/train_plan1.py",
+                "--mistral_models_path",
+                args.mistral_models_path,
+                "--model_name",
+                args.model_name,
                 "--run_dir",
                 run_dir,
                 "--task_family",
@@ -53,6 +59,10 @@ def main():
             eval_cmd = [
                 sys.executable,
                 "scripts/eval_plan1.py",
+                "--mistral_models_path",
+                args.mistral_models_path,
+                "--model_name",
+                args.model_name,
                 "--task_family",
                 "single_image",
                 "--evidence_source",
@@ -63,8 +73,6 @@ def main():
                 str(t),
                 "--layer",
                 str(k),
-                "--connectors_path",
-                os.path.join(run_dir, "best_connectors.pt"),
                 "--max_eval_samples",
                 str(args.eval_samples),
                 "--baseline",
@@ -72,6 +80,10 @@ def main():
                 "--device",
                 args.device,
             ]
+            best_ckpt = os.path.join(run_dir, "best_connectors.pt")
+            last_ckpt = os.path.join(run_dir, "last_connectors.pt")
+            connectors_path = best_ckpt if os.path.exists(best_ckpt) else last_ckpt
+            eval_cmd.extend(["--connectors_path", connectors_path])
             proc = subprocess.run(eval_cmd, check=True, capture_output=True, text=True)
             rows.append({"num_tokens": t, "layer": k, "raw_eval_output": proc.stdout.strip()})
 
@@ -83,4 +95,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

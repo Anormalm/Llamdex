@@ -9,6 +9,10 @@ def _clean(text: str) -> str:
 
 def parse_label_answer(text: str, class_names):
     cleaned = _clean(text)
+    if len(cleaned) == 1 and cleaned.isalpha():
+        idx = ord(cleaned.upper()) - ord("A")
+        if 0 <= idx < len(class_names):
+            return idx
     for i, c in enumerate(class_names):
         if cleaned == _clean(c):
             return i
@@ -44,4 +48,3 @@ def population_bin_to_fraction_midpoint(bin_id: int, mode: str = "integer") -> f
         return bin_id / 10.0
     bin_id = max(0, min(9, int(bin_id)))
     return (bin_id + 0.5) / 10.0
-

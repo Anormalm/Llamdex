@@ -207,3 +207,46 @@ Smoke test completed successfully!
 - Preserves existing tabular codepaths (no breaking changes)
 - Supports CIFAR-10 (minimum), extensible to CIFAR-100
 - Default output: single token digit (0-9) to avoid multi-subtoken issues
+
+## Benchmark Log (2026-02-14)
+
+### Environment / Eval Setup
+
+- Task: `single_image`, `qa_type=label`
+- Dataset: CIFAR-10 (`max_eval_samples=1000`)
+- Model: `hf-internal-testing/tiny-random-MistralForCausalLM`
+- Cache: `runs/hf_cache_tiny`
+- Expert checkpoint: `runs/experts/cifar10_resnet18_best.pt`
+- Batch size: `16`
+- Device: `cuda`
+
+### Plan1 Baseline Matrix
+
+| Case | Accuracy | Wall Time (s) |
+|---|---:|---:|
+| `vision_only` | 0.821 | 28.19 |
+| `injection_old` (`runs/plan1_meaningful_vision/best_connectors.pt`) | 0.811 | 18.64 |
+| `injection_iter` (`runs/plan1_iter_lr2e4/best_connectors.pt`) | 0.839 | 11.22 |
+| `llm_only_raw` (`constrain_llm_only_outputs=0`) | 0.000 | 10.63 |
+| `llm_only_constrained` (`constrain_llm_only_outputs=1`) | 0.103 | 10.55 |
+| `text_prompt_raw` (`constrain_llm_only_outputs=0`) | 0.000 | 13.68 |
+| `text_prompt_constrained` (`constrain_llm_only_outputs=1`) | 0.103 | 13.63 |
+
+CSV artifact:
+- `runs/benchmark_plan1_2026-02-14.csv`
+
+### Iteration Training Result
+
+Tuned connector training run:
+- Run dir: `runs/plan1_iter_lr2e4`
+- Output metrics: `{'final_eval_acc': 0.835, 'best_eval_acc': 0.839}`
+- Train wall time: `391.51s`
+
+### Test Results
+
+Command:
+- `python -m pytest -q tests --durations=10`
+
+Result:
+- `3 passed, 4 warnings in 5.57s`
+- Pytest wall time: `7.92s`

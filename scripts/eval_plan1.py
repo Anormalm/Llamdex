@@ -33,6 +33,7 @@ def parse_args():
     p.add_argument("--max_eval_samples", type=int, default=512)
     p.add_argument("--baseline", type=str, default="injection", choices=["injection", "vision_only", "llm_only", "text_prompt"])
     p.add_argument("--device", type=str, default="cuda")
+    p.add_argument("--constrain_llm_only_outputs", type=int, default=1, choices=[0, 1])
     return p.parse_args()
 
 
@@ -63,6 +64,6 @@ if __name__ == "__main__":
         max_eval_samples=a.max_eval_samples,
         baseline=a.baseline,
         device=a.device,
+        constrain_llm_only_outputs=bool(a.constrain_llm_only_outputs),
     )
     print(evaluate_plan1(args))
-

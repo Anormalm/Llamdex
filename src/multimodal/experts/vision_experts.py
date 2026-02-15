@@ -6,6 +6,7 @@ from typing import Literal, Optional
 import torch
 import torch.nn as nn
 import torchvision.models as tvm
+import warnings
 
 
 def _resnet18(weights: str = "imagenet") -> nn.Module:
@@ -43,6 +44,12 @@ class VisionClassifierExpert(nn.Module):
             if isinstance(state, dict) and "state_dict" in state:
                 state = state["state_dict"]
             self.model.load_state_dict(state, strict=False)
+        else:
+            warnings.warn(
+                "VisionClassifierExpert loaded without checkpoint_path. "
+                "The classifier head is randomly initialized; accuracy will be near chance. "
+                "Provide a CIFAR-finetuned checkpoint for meaningful results."
+            )
 
         for p in self.model.parameters():
             p.requires_grad = False
@@ -93,4 +100,3 @@ def build_vision_expert(
     if expert_kind == "embedding":
         return VisionEmbeddingExpert(checkpoint_path=checkpoint_path, init_weights=init_weights)
     raise ValueError(f"Unsupported expert_kind: {expert_kind}")
-

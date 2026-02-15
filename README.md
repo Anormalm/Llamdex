@@ -151,6 +151,40 @@ Plan 1 adds a unified multimodal evidence path:
 - reserved-token overwrite injection at one chosen LLM layer `k`
 - frozen base LLM + frozen client expert, trainable connectors only
 
+### Current Architecture (Detailed)
+
+At runtime, Plan 1 follows a strict connector-only adaptation path:
+
+1. Input construction:
+- `single_image` tasks build an instruction prompt and carry either image tensors or text descriptions.
+- `population` tasks aggregate a set of images and build summary statistics.
+
+2. Evidence builder stage:
+- Vision path: `VisionEvidenceBuilder` runs a frozen vision expert and maps logits/embeddings to `z` (`evidence_dim`).
+- Text path: `TextEvidenceBuilder` encodes descriptions into `z`.
+- Population path: `PopulationStatsEvidenceBuilder` converts class-probability summaries to `z`.
+
+3. Projection stage:
+- `EvidenceProjector` maps `z -> (num_tokens, hidden_size)` and applies optional scaling `alpha`.
+
+4. Injection stage:
+- `SemanticEvidenceDomainExpert` is attached to one decoder layer (`layer_to_add`).
+- On forward pass, projected expert tokens overwrite reserved token slots at that layer.
+- Base LLM parameters remain frozen; only evidence-builder/projector connector parameters are trainable.
+
+5. Training / evaluation behavior:
+- Training optimizes next-token loss over constrained QA targets.
+- Baselines:
+  - `vision_only`: direct expert prediction, no LLM reasoning.
+  - `llm_only`: no expert injection.
+  - `text_prompt`: expert output appended to prompt text, no injection.
+
+Implementation anchors:
+- `src/multimodal/trainers/plan1_trainer.py`
+- `src/multimodal/eval/plan1_eval.py`
+- `src/multimodal/evidence/*`
+- `src/multimodal/injection/*`
+
 ### New package
 
 `src/multimodal/`:
@@ -256,6 +290,31 @@ python scripts/run_plan1_ablation.py \
 ```bash
 python -m pytest -q tests/test_plan1_smoke.py tests/test_tabular_pipeline_smoke.py
 ```
+
+### Latest Benchmarks (2026-02-14)
+
+Evaluation setup:
+- Task: `single_image`, `qa_type=label`
+- Dataset: CIFAR-10 (`max_eval_samples=1000`)
+- Model: `hf-internal-testing/tiny-random-MistralForCausalLM`
+- Expert checkpoint: `runs/experts/cifar10_resnet18_best.pt`
+- Device: `cuda`
+- Batch size: `16`
+
+| Case | Accuracy | Wall Time (s) |
+|---|---:|---:|
+| `vision_only` | 0.821 | 28.19 |
+| `injection_old` (`runs/plan1_meaningful_vision/best_connectors.pt`) | 0.811 | 18.64 |
+| `injection_iter` (`runs/plan1_iter_lr2e4/best_connectors.pt`) | 0.839 | 11.22 |
+| `llm_only_raw` (`constrain_llm_only_outputs=0`) | 0.000 | 10.63 |
+| `llm_only_constrained` (`constrain_llm_only_outputs=1`) | 0.103 | 10.55 |
+| `text_prompt_raw` (`constrain_llm_only_outputs=0`) | 0.000 | 13.68 |
+| `text_prompt_constrained` (`constrain_llm_only_outputs=1`) | 0.103 | 13.63 |
+
+Notes:
+- For tiny random LLM backbones, constrained decoding prevents punctuation collapse in `llm_only`/`text_prompt` and forces valid task-token outputs.
+- Benchmark artifact CSV: `runs/benchmark_plan1_2026-02-14.csv`
+- Iteration run: `runs/plan1_iter_lr2e4` with `best_eval_acc=0.839`
 
 ## Baselines
 

@@ -54,6 +54,41 @@ class EvalPlan1Args:
     max_eval_samples: Optional[int] = 512
     baseline: str = "injection"  # injection|vision_only|llm_only|text_prompt
     device: str = "cuda"
+    constrain_llm_only_outputs: bool = True
+
+
+def _single_token_ids(tokenizer, text: str):
+    ids = set()
+    variants = [text, text.lower(), text.upper()]
+    for v in variants:
+        for prefix in (" ", ""):
+            toks = tokenizer.encode(prefix + v, add_special_tokens=False)
+            if len(toks) == 1:
+                ids.add(int(toks[0]))
+    return ids
+
+
+def _allowed_answer_token_ids(args: EvalPlan1Args, tokenizer, class_names):
+    ids = set()
+    if args.task_family == "single_image":
+        if args.qa_type == "yesno":
+            ids.update(_single_token_ids(tokenizer, "Yes"))
+            ids.update(_single_token_ids(tokenizer, "No"))
+        elif args.qa_type == "index":
+            for i in range(len(class_names)):
+                ids.update(_single_token_ids(tokenizer, str(i)))
+        else:
+            if len(class_names) <= 26:
+                for i in range(len(class_names)):
+                    ids.update(_single_token_ids(tokenizer, chr(ord("A") + i)))
+    else:
+        if args.population_output_mode == "integer":
+            for i in range(11):
+                ids.update(_single_token_ids(tokenizer, str(i)))
+        else:
+            for i in range(10):
+                ids.update(_single_token_ids(tokenizer, chr(ord("A") + i)))
+    return sorted(ids)
 
 
 def _build_model(args: EvalPlan1Args):
@@ -183,7 +218,10 @@ def evaluate_plan1(args: EvalPlan1Args) -> Dict[str, float]:
         text_tokenizer = EncoderTokenizer.from_pretrained(args.text_encoder_model_id, cache_dir=args.mistral_models_path)
 
     class_names = class_names_for_dataset(args.dataset_name)
+    allowed_token_ids = _allowed_answer_token_ids(args, tokenizer, class_names)
     model = model.to(device).to(torch.bfloat16 if device.type == "cuda" else torch.float32)
+    if vision_expert is not None:
+        vision_expert = vision_expert.to(device)
     model.eval()
 
     total = 0
@@ -248,7 +286,13 @@ def evaluate_plan1(args: EvalPlan1Args) -> Dict[str, float]:
                 expert_inputs = _expert_inputs_for_batch(args, batch, device, text_tokenizer, vision_expert)
                 outputs = model(tokens, attention_mask=mask, expert_inputs=(expert_inputs,), use_cache=False)
 
-            pred_ids = outputs.logits[:, -1, :].argmax(dim=-1).cpu().tolist()
+            next_logits = outputs.logits[:, -1, :]
+            if args.baseline in {"llm_only", "text_prompt"} and args.constrain_llm_only_outputs and allowed_token_ids:
+                allowed = torch.tensor(allowed_token_ids, device=next_logits.device, dtype=torch.long)
+                pred_local = next_logits.index_select(dim=-1, index=allowed).argmax(dim=-1)
+                pred_ids = allowed[pred_local].cpu().tolist()
+            else:
+                pred_ids = next_logits.argmax(dim=-1).cpu().tolist()
             pred_texts = [tokenizer.decode([pid]).strip() for pid in pred_ids]
 
             if args.task_family == "single_image":
@@ -260,7 +304,7 @@ def evaluate_plan1(args: EvalPlan1Args) -> Dict[str, float]:
                     if args.qa_type == "index":
                         gt = [int(x) for x in batch["answer_text"]]
                     else:
-                        gt = [class_names.index(x) for x in batch["answer_text"]]
+                        gt = [parse_label_answer(x, class_names) for x in batch["answer_text"]]
                 for p, g in zip(parsed_pred, gt):
                     if p is not None and int(p) == int(g):
                         correct += 1

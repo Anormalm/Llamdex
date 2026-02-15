@@ -39,16 +39,21 @@ class SemanticEvidenceDomainExpert(nn.Module):
         return f"obj:{id(x)}"
 
     def forward_with_features(self, x: Any) -> torch.Tensor:
-        key = self._build_cache_key(x)
-        if self._cache_key == key and self._cache_tokens is not None:
+        use_cache = not torch.is_grad_enabled()
+        key = self._build_cache_key(x) if use_cache else None
+        if use_cache and self._cache_key == key and self._cache_tokens is not None:
             return self._cache_tokens
 
         z = self.evidence_builder(x)
         self.intermediate_result = z.detach()
         self.output = z.detach()
         injected = self.projector(z)
-        self._cache_key = key
-        self._cache_tokens = injected
+        if use_cache:
+            self._cache_key = key
+            self._cache_tokens = injected
+        else:
+            self._cache_key = None
+            self._cache_tokens = None
         return injected
 
     def get_expert_input(self, scale: bool = True):
@@ -67,4 +72,3 @@ class SemanticEvidenceDomainExpert(nn.Module):
 
     def clone(self):
         return self
-

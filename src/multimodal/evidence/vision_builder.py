@@ -62,6 +62,12 @@ class VisionEvidenceBuilder(EvidenceBuilder):
         raise RuntimeError("Vision expert did not provide logits.")
 
     def forward(self, inputs: torch.Tensor) -> torch.Tensor:
+        try:
+            p = next(self.vision_expert.parameters())
+            inputs = inputs.to(device=p.device, dtype=p.dtype)
+        except StopIteration:
+            pass
+
         with torch.no_grad():
             out = self.vision_expert(inputs)
             if out.logits is not None:
@@ -70,11 +76,11 @@ class VisionEvidenceBuilder(EvidenceBuilder):
                 self._last_probs = None
 
         if self.expert_output_mode == "logits":
-            return self.logits_to_z(out.logits.float())
+            logits = out.logits.to(dtype=self.logits_to_z.weight.dtype)
+            return self.logits_to_z(logits)
 
-        emb = out.embedding.float()
+        emb = out.embedding.to(dtype=next(self.embedding_adapter.parameters(), out.embedding).dtype if isinstance(self.embedding_adapter, nn.Module) else out.embedding.dtype)
         z = self.embedding_adapter(emb)
         if z.shape[-1] != self.evidence_dim:
             raise ValueError(f"Embedding evidence dim mismatch: expected {self.evidence_dim}, got {z.shape[-1]}")
         return z
-
