@@ -49,6 +49,12 @@ def train_img(
     ffn_hidden_size: int = 2048,
     alpha: float = 1.0,
     dropout: float = 0.0,
+    evidence_dim: int = 512,
+    evidence_source: str = "vision",
+    task: str = "single",
+    text_encoder_model: str = "distilroberta-base",
+    yesno_class: str = "truck",
+    population_class: str = "airplane",
     batch_size: int = 32,
     gradient_accumulation_steps: int = 4,
     num_epochs: int = 3,
@@ -63,6 +69,10 @@ def train_img(
     set_seed(seed)
     
     accelerator = Accelerator(gradient_accumulation_steps=gradient_accumulation_steps, mixed_precision="bf16")
+    effective_evidence_dim = evidence_dim
+    if evidence_source == "vision" and task == "single" and evidence_dim == 512:
+        # Preserve legacy behavior for default image classification runs.
+        effective_evidence_dim = num_classes if vision_output == "logits" else 512
     
     if accelerator.is_local_main_process:
         writer = SummaryWriter(log_dir=f"runs/llamdex_img_cifar10")
@@ -76,6 +86,9 @@ def train_img(
         print(f"  Layer: {layer_to_add}")
         print(f"  Alpha: {alpha}")
         print(f"  FFN Hidden Size: {ffn_hidden_size}")
+        print(f"  Evidence Source: {evidence_source}")
+        print(f"  Task: {task}")
+        print(f"  Evidence Dim: {effective_evidence_dim}")
         print(f"  Batch Size: {batch_size}")
         print(f"  Learning Rate: {learning_rate}")
         print(f"  Num Epochs: {num_epochs}")
@@ -118,6 +131,11 @@ def train_img(
         ffn_hidden_size=ffn_hidden_size,
         alpha=alpha,
         dropout=dropout,
+        evidence_source=evidence_source,
+        evidence_dim=effective_evidence_dim,
+        task=task,
+        text_encoder_model=text_encoder_model,
+        mistral_models_path=mistral_models_path,
     )
     
     # Add expert to specified layer
@@ -143,26 +161,42 @@ def train_img(
         root=data_root,
         train=True,
         tokenizer=tokenizer,
+        task=task,
+        evidence_source=evidence_source,
+        yesno_class=yesno_class,
+        population_class=population_class,
     )
     
     test_dataset = CIFAR10Dataset(
         root=data_root,
         train=False,
         tokenizer=tokenizer,
+        task=task,
+        evidence_source=evidence_source,
+        yesno_class=yesno_class,
+        population_class=population_class,
     )
     
     train_dataloader = DataLoader(
         train_dataset,
         batch_size=batch_size // gradient_accumulation_steps,
         shuffle=True,
-        collate_fn=get_cifar10_collate_fn(tokenizer.pad_token_id),
+        collate_fn=get_cifar10_collate_fn(
+            tokenizer.pad_token_id,
+            task=task,
+            population_class_idx=train_dataset.population_class_idx,
+        ),
     )
     
     test_dataloader = DataLoader(
         test_dataset,
         batch_size=batch_size // gradient_accumulation_steps,
         shuffle=False,
-        collate_fn=get_cifar10_collate_fn(tokenizer.pad_token_id),
+        collate_fn=get_cifar10_collate_fn(
+            tokenizer.pad_token_id,
+            task=task,
+            population_class_idx=test_dataset.population_class_idx,
+        ),
     )
     
     # Setup optimizer and scheduler
@@ -185,6 +219,9 @@ def train_img(
     
     # Get digit token IDs for evaluation
     digit_token_ids = train_dataset.digit_token_ids
+    yesno_token_ids = None
+    if task == "yesno":
+        yesno_token_ids = [train_dataset.yes_token_id, train_dataset.no_token_id]
     
     global_step = 0
     
@@ -202,11 +239,24 @@ def train_img(
                     tokens = batch["tokens"].to(model.device)
                     attn_mask = batch["attention_mask"].to(model.device)
                     target_token_ids = batch["target_token_ids"].to(model.device)  # (B,)
+                    target_yesno = batch.get("target_yesno")
+                    if target_yesno is not None:
+                        target_yesno = target_yesno.to(model.device)
+                    target_fraction = batch.get("target_fraction")
+                    if target_fraction is not None:
+                        target_fraction = target_fraction.to(model.device)
                     
-                    # Forward pass: images -> vision expert -> decoder -> injection
+                    if evidence_source == "text":
+                        expert_payload = {"texts": batch["evidence_texts"]}
+                    elif task == "population":
+                        expert_payload = {"images": batch["population_images"].to(model.device)}
+                    else:
+                        expert_payload = images
+
+                    # Forward pass: evidence -> evidence builder -> projector -> injection
                     outputs = model(
                         tokens,
-                        expert_inputs=(images,),  # Pass images as expert_inputs
+                        expert_inputs=(expert_payload,),
                         attention_mask=attn_mask,
                         use_cache=False,
                     )
@@ -216,8 +266,17 @@ def train_img(
                     # Get logits at the last position (first generation token)
                     last_logits = logits[:, -1, :]  # (B, vocab_size)
                     
-                    # Compute loss on target token IDs
-                    loss = nn.CrossEntropyLoss()(last_logits, target_token_ids)
+                    if task == "population":
+                        digit_logits = last_logits[:, digit_token_ids]
+                        probs = torch.softmax(digit_logits, dim=-1)
+                        bin_values = torch.linspace(
+                            0.0, 1.0, steps=len(digit_token_ids), device=model.device, dtype=probs.dtype
+                        ).unsqueeze(0)
+                        pred_fraction = (probs * bin_values).sum(dim=-1)
+                        loss = nn.MSELoss()(pred_fraction, target_fraction.to(pred_fraction.dtype))
+                    else:
+                        # Compute loss on target token IDs
+                        loss = nn.CrossEntropyLoss()(last_logits, target_token_ids)
                     
                     accelerator.backward(loss)
                     optimizer.step()
@@ -239,6 +298,7 @@ def train_img(
         test_loss = 0.0
         correct = 0
         total = 0
+        fraction_abs_error = 0.0
         
         with torch.no_grad():
             for batch in tqdm(test_dataloader, disable=not accelerator.is_main_process):
@@ -248,10 +308,23 @@ def train_img(
                     attn_mask = batch["attention_mask"].to(model.device)
                     target_token_ids = batch["target_token_ids"].to(model.device)
                     labels = batch["labels"].to(model.device)
+                    target_yesno = batch.get("target_yesno")
+                    if target_yesno is not None:
+                        target_yesno = target_yesno.to(model.device)
+                    target_fraction = batch.get("target_fraction")
+                    if target_fraction is not None:
+                        target_fraction = target_fraction.to(model.device)
+
+                    if evidence_source == "text":
+                        expert_payload = {"texts": batch["evidence_texts"]}
+                    elif task == "population":
+                        expert_payload = {"images": batch["population_images"].to(model.device)}
+                    else:
+                        expert_payload = images
                     
                     outputs = model(
                         tokens,
-                        expert_inputs=(images,),
+                        expert_inputs=(expert_payload,),
                         attention_mask=attn_mask,
                         use_cache=False,
                     )
@@ -259,15 +332,34 @@ def train_img(
                     logits = outputs.logits
                     last_logits = logits[:, -1, :]
                     
-                    loss = nn.CrossEntropyLoss()(last_logits, target_token_ids)
+                    if task == "population":
+                        digit_logits = last_logits[:, digit_token_ids]
+                        probs = torch.softmax(digit_logits, dim=-1)
+                        bin_values = torch.linspace(
+                            0.0, 1.0, steps=len(digit_token_ids), device=model.device, dtype=probs.dtype
+                        ).unsqueeze(0)
+                        pred_fraction = (probs * bin_values).sum(dim=-1)
+                        loss = nn.MSELoss()(pred_fraction, target_fraction.to(pred_fraction.dtype))
+                        fraction_abs_error += torch.abs(pred_fraction - target_fraction).sum().item()
+                    else:
+                        loss = nn.CrossEntropyLoss()(last_logits, target_token_ids)
                     test_loss += loss.item()
                     
-                    # Get predictions: argmax over digit token IDs
-                    digit_logits = last_logits[:, digit_token_ids]  # (B, 10)
-                    preds = digit_logits.argmax(dim=-1)  # (B,)
-                    
-                    correct += (preds == labels).sum().item()
-                    total += labels.size(0)
+                    if task == "population":
+                        digit_logits = last_logits[:, digit_token_ids]
+                        preds = digit_logits.argmax(dim=-1)
+                        correct += (preds == target_token_ids).sum().item()
+                        total += target_token_ids.size(0)
+                    elif task == "yesno":
+                        yesno_logits = last_logits[:, yesno_token_ids]
+                        preds = yesno_logits.argmax(dim=-1)
+                        correct += (preds == target_yesno).sum().item()
+                        total += target_yesno.size(0)
+                    else:
+                        digit_logits = last_logits[:, digit_token_ids]
+                        preds = digit_logits.argmax(dim=-1)
+                        correct += (preds == labels).sum().item()
+                        total += labels.size(0)
         
         test_acc = correct / total if total > 0 else 0.0
         avg_train_loss = train_loss / len(train_dataloader)
@@ -277,7 +369,13 @@ def train_img(
             print(f"Epoch {epoch + 1}/{num_epochs}")
             print(f"  Train Loss: {avg_train_loss:.4f}")
             print(f"  Test Loss: {avg_test_loss:.4f}")
-            print(f"  Test Accuracy: {test_acc:.4f} ({correct}/{total})")
+            if task == "population":
+                mae = fraction_abs_error / max(total, 1)
+                print(f"  Population Bin Accuracy: {test_acc:.4f} ({correct}/{total})")
+                print(f"  Population Fraction MAE: {mae:.4f}")
+                writer.add_scalar('MAE/population', mae, epoch)
+            else:
+                print(f"  Test Accuracy: {test_acc:.4f} ({correct}/{total})")
             writer.add_scalar('Loss/test', avg_test_loss, epoch)
             writer.add_scalar('Accuracy/test', test_acc, epoch)
             
@@ -318,6 +416,18 @@ if __name__ == '__main__':
                        help="Alpha scaling factor")
     parser.add_argument("--dropout", type=float, default=0.0,
                        help="Dropout rate")
+    parser.add_argument("--evidence_dim", type=int, default=512,
+                       help="Evidence vector dimension")
+    parser.add_argument("--evidence_source", type=str, default="vision", choices=["vision", "text"],
+                       help="Evidence source type")
+    parser.add_argument("--task", type=str, default="single", choices=["single", "yesno", "population"],
+                       help="Training task")
+    parser.add_argument("--text_encoder_model", type=str, default="distilroberta-base",
+                       help="Text encoder model for text evidence source")
+    parser.add_argument("--yesno_class", type=str, default="truck",
+                       help="Target class used by yes/no queries")
+    parser.add_argument("--population_class", type=str, default="airplane",
+                       help="Target class used by population queries")
     parser.add_argument("--batch_size", type=int, default=32,
                        help="Batch size")
     parser.add_argument("--gradient_accumulation_steps", type=int, default=4,
@@ -349,6 +459,12 @@ if __name__ == '__main__':
         ffn_hidden_size=args.ffn_hidden_size,
         alpha=args.alpha,
         dropout=args.dropout,
+        evidence_dim=args.evidence_dim,
+        evidence_source=args.evidence_source,
+        task=args.task,
+        text_encoder_model=args.text_encoder_model,
+        yesno_class=args.yesno_class,
+        population_class=args.population_class,
         batch_size=args.batch_size,
         gradient_accumulation_steps=args.gradient_accumulation_steps,
         num_epochs=args.num_epochs,

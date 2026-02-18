@@ -23,10 +23,20 @@ from accelerate import Accelerator
 from tqdm import tqdm
 import numpy as np
 from sklearn.metrics import accuracy_score
+import random
 
 from src.model.DomainMistralModel import DomainMistralForCausalLM
 from src.vision.vision_domain_expert import VisionDomainExpert
 from src.vision.cifar_dataset import CIFAR10Dataset, get_cifar10_collate_fn
+
+
+def set_seed(seed: int = 42):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 
 
 def evaluate_img(
@@ -41,6 +51,12 @@ def evaluate_img(
     ffn_hidden_size: int = 2048,
     alpha: float = 1.0,
     dropout: float = 0.0,
+    evidence_dim: int = 512,
+    evidence_source: str = "vision",
+    task: str = "single",
+    text_encoder_model: str = "distilroberta-base",
+    yesno_class: str = "truck",
+    population_class: str = "airplane",
     batch_size: int = 32,
     data_root: str = "./data/cifar10",
     baseline: str = None,  # 'vision_only', 'llm_only', 'prompt'
@@ -48,7 +64,12 @@ def evaluate_img(
 ):
     """Evaluate Llamdex-IMG on CIFAR-10."""
     
+    set_seed(seed)
     accelerator = Accelerator(mixed_precision="bf16")
+    effective_evidence_dim = evidence_dim
+    if evidence_source == "vision" and task == "single" and evidence_dim == 512:
+        # Preserve legacy behavior for default image classification runs.
+        effective_evidence_dim = num_classes if vision_output == "logits" else 512
     
     if accelerator.is_local_main_process:
         print("=" * 80)
@@ -60,6 +81,9 @@ def evaluate_img(
         print(f"  Num Tokens: {num_tokens}")
         print(f"  Layer: {layer_to_add}")
         print(f"  Alpha: {alpha}")
+        print(f"  Evidence Source: {evidence_source}")
+        print(f"  Task: {task}")
+        print(f"  Evidence Dim: {effective_evidence_dim}")
         print(f"  Baseline: {baseline if baseline else 'Llamdex-IMG'}")
         print("=" * 80)
     
@@ -99,6 +123,11 @@ def evaluate_img(
         ffn_hidden_size=ffn_hidden_size,
         alpha=alpha if baseline != 'llm_only' else 0.0,  # Disable injection for LLM-only baseline
         dropout=dropout,
+        evidence_source=evidence_source,
+        evidence_dim=effective_evidence_dim,
+        task=task,
+        text_encoder_model=text_encoder_model,
+        mistral_models_path=mistral_models_path,
     )
     
     # Add expert to specified layer
@@ -119,19 +148,30 @@ def evaluate_img(
         root=data_root,
         train=False,
         tokenizer=tokenizer,
+        task=task,
+        evidence_source=evidence_source,
+        yesno_class=yesno_class,
+        population_class=population_class,
     )
     
     test_dataloader = DataLoader(
         test_dataset,
         batch_size=batch_size,
         shuffle=False,
-        collate_fn=get_cifar10_collate_fn(tokenizer.pad_token_id),
+        collate_fn=get_cifar10_collate_fn(
+            tokenizer.pad_token_id,
+            task=task,
+            population_class_idx=test_dataset.population_class_idx,
+        ),
     )
     
     model, test_dataloader = accelerator.prepare(model, test_dataloader)
     
     # Get digit token IDs
     digit_token_ids = test_dataset.digit_token_ids
+    yesno_token_ids = None
+    if task == "yesno":
+        yesno_token_ids = [test_dataset.yes_token_id, test_dataset.no_token_id]
     
     model.eval()
     all_preds = []
@@ -141,8 +181,9 @@ def evaluate_img(
         for batch in tqdm(test_dataloader, disable=not accelerator.is_main_process):
             images = batch["images"].to(model.device)
             labels = batch["labels"].to(model.device)
+            target_token_ids = batch["target_token_ids"].to(model.device)
             
-            if baseline == 'vision_only':
+            if baseline == 'vision_only' and evidence_source == "vision" and task != "population":
                 # Baseline 1: Vision-only classifier
                 vision_expert.vision_expert.eval()
                 with torch.no_grad():
@@ -161,7 +202,7 @@ def evaluate_img(
                             preds = torch.zeros(images.size(0), dtype=torch.long, device=images.device)
                             print("Warning: Vision-only baseline with embedding mode: classifier not available")
             
-            elif baseline == 'prompt':
+            elif baseline == 'prompt' and evidence_source == "vision" and task != "population":
                 # Baseline 3: Prompt baseline
                 # Run vision expert first
                 vision_expert.vision_expert.eval()
@@ -206,8 +247,14 @@ def evaluate_img(
                     # Baseline 2: LLM-only (no injection, alpha=0 already set)
                     expert_inputs = None
                 else:
-                    # Llamdex-IMG: use injection
-                    expert_inputs = (images,)
+                    # Llamdex-IMG: use evidence injection
+                    if evidence_source == "text":
+                        expert_payload = {"texts": batch["evidence_texts"]}
+                    elif task == "population":
+                        expert_payload = {"images": batch["population_images"].to(model.device)}
+                    else:
+                        expert_payload = images
+                    expert_inputs = (expert_payload,)
                 
                 outputs = model(
                     tokens,
@@ -220,11 +267,23 @@ def evaluate_img(
                 last_logits = logits[:, -1, :]
                 
                 # Get predictions: argmax over digit token IDs
-                digit_logits = last_logits[:, digit_token_ids]
-                preds = digit_logits.argmax(dim=-1)
+                if task == "population":
+                    digit_logits = last_logits[:, digit_token_ids]
+                    preds = digit_logits.argmax(dim=-1)
+                elif task == "yesno":
+                    yesno_logits = last_logits[:, yesno_token_ids]
+                    preds = yesno_logits.argmax(dim=-1)
+                else:
+                    digit_logits = last_logits[:, digit_token_ids]
+                    preds = digit_logits.argmax(dim=-1)
             
             all_preds.extend(preds.cpu().numpy())
-            all_labels.extend(labels.cpu().numpy())
+            if task == "population":
+                all_labels.extend(target_token_ids.cpu().numpy())
+            elif task == "yesno":
+                all_labels.extend(batch["target_yesno"].cpu().numpy())
+            else:
+                all_labels.extend(labels.cpu().numpy())
     
     # Compute accuracy
     accuracy = accuracy_score(all_labels, all_preds)
@@ -263,6 +322,18 @@ if __name__ == '__main__':
                        help="Alpha scaling factor")
     parser.add_argument("--dropout", type=float, default=0.0,
                        help="Dropout rate")
+    parser.add_argument("--evidence_dim", type=int, default=512,
+                       help="Evidence vector dimension")
+    parser.add_argument("--evidence_source", type=str, default="vision", choices=["vision", "text"],
+                       help="Evidence source type")
+    parser.add_argument("--task", type=str, default="single", choices=["single", "yesno", "population"],
+                       help="Evaluation task")
+    parser.add_argument("--text_encoder_model", type=str, default="distilroberta-base",
+                       help="Text encoder model for text evidence source")
+    parser.add_argument("--yesno_class", type=str, default="truck",
+                       help="Target class used by yes/no queries")
+    parser.add_argument("--population_class", type=str, default="airplane",
+                       help="Target class used by population queries")
     parser.add_argument("--batch_size", type=int, default=32,
                        help="Batch size")
     parser.add_argument("--data_root", type=str, default="./data/cifar10",
@@ -287,6 +358,12 @@ if __name__ == '__main__':
         ffn_hidden_size=args.ffn_hidden_size,
         alpha=args.alpha,
         dropout=args.dropout,
+        evidence_dim=args.evidence_dim,
+        evidence_source=args.evidence_source,
+        task=args.task,
+        text_encoder_model=args.text_encoder_model,
+        yesno_class=args.yesno_class,
+        population_class=args.population_class,
         batch_size=args.batch_size,
         data_root=args.data_root,
         baseline=args.baseline,

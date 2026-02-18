@@ -144,6 +144,58 @@ python tests/test_img_smoke.py
 
 This runs 10 training steps on a tiny subset without requiring GPU.
 
+### Plan-1 Upgrade for IMG Scripts
+
+The IMG pipeline now supports semantic evidence injection with a unified flow:
+
+`EvidenceSource -> evidence vector z -> EvidenceProjector -> token injection -> LLM reasoning`
+
+This is implemented in-place in:
+- `scripts/train_img.py`
+- `scripts/eval_img.py`
+- `src/vision/vision_domain_expert.py`
+- `src/vision/evidence_builder.py`
+
+New CLI options:
+- `--evidence_dim` (default: `512`)
+- `--evidence_source` (`vision` or `text`, default: `vision`)
+- `--task` (`single`, `yesno`, `population`, default: `single`)
+
+Compatibility note:
+- Existing commands still work unchanged.
+- Default `vision + single` behavior preserves the prior classification path.
+
+#### Examples
+
+Vision evidence, single-label classification (existing behavior):
+```bash
+python scripts/train_img.py --evidence_source vision --task single
+python scripts/eval_img.py --model_state_dict model/llm/llamdex_img_cifar10/model_final.pt --evidence_source vision --task single
+```
+
+Text evidence (description-only input), single-label classification:
+```bash
+python scripts/train_img.py --evidence_source text --task single --text_encoder_model distilroberta-base
+python scripts/eval_img.py --model_state_dict model/llm/llamdex_img_cifar10/model_final.pt --evidence_source text --task single
+```
+
+Yes/No query mode:
+```bash
+python scripts/train_img.py --task yesno --yesno_class truck
+python scripts/eval_img.py --model_state_dict model/llm/llamdex_img_cifar10/model_final.pt --task yesno --yesno_class truck
+```
+
+Population query mode:
+```bash
+python scripts/train_img.py --task population --population_class airplane
+python scripts/eval_img.py --model_state_dict model/llm/llamdex_img_cifar10/model_final.pt --task population --population_class airplane
+```
+
+Forward-pass validation (no training):
+```bash
+python scripts/test_plan1_upgrade.py
+```
+
 ## Plan 1: Semantic Evidence Injection
 
 Plan 1 adds a unified multimodal evidence path:

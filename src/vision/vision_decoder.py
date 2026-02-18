@@ -1,16 +1,15 @@
 """
-Trainable decoder that maps vision expert output to token embeddings for injection.
+Trainable projector that maps evidence vectors to token embeddings for injection.
 """
 
 import torch
 import torch.nn as nn
-from typing import Optional
 from ..model.util import SwiGLU
 
 
-class VisionToLlamdexDecoder(nn.Module):
+class EvidenceProjector(nn.Module):
     """
-    Decoder that maps vision expert output (logits or embedding) to token embeddings.
+    Projector that maps generic evidence vectors z to token embeddings.
     
     Architecture:
     - FFN (SwiGLU or Linear) -> (num_tokens * hidden_size) -> reshape
@@ -52,10 +51,10 @@ class VisionToLlamdexDecoder(nn.Module):
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
-        Forward pass: map expert output to token embeddings.
+        Forward pass: map evidence vector z to token embeddings.
         
         Args:
-            x: Expert output of shape (batch_size, input_dim)
+            x: Evidence tensor z of shape (batch_size, input_dim)
             
         Returns:
             Token embeddings of shape (batch_size, num_tokens, hidden_size)
@@ -74,3 +73,7 @@ class VisionToLlamdexDecoder(nn.Module):
         x = self.layernorm(x)
         
         return x
+
+
+# Backward compatibility alias for existing imports/usages.
+VisionToLlamdexDecoder = EvidenceProjector
