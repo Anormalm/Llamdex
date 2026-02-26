@@ -23,6 +23,7 @@ from src.multimodal.tasks.parsing import (
     parse_label_answer,
     parse_population_answer,
     parse_yes_no_answer,
+    population_fraction_to_bin,
     population_bin_to_fraction_midpoint,
 )
 from src.multimodal.tasks.prompts import class_names_for_dataset
@@ -33,8 +34,8 @@ class EvalPlan1Args:
     mistral_models_path: str = "model/llm"
     model_name: str = "mistralai/Mistral-7B-Instruct-v0.3"
     connectors_path: Optional[str] = None
-    dataset_name: str = "cifar10"
-    data_root: str = "./data/cifar10"
+    dataset_name: str = "dtd"
+    data_root: str = "./data"
     task_family: str = "single_image"
     evidence_source: str = "vision"
     qa_type: str = "label"
@@ -57,6 +58,16 @@ class EvalPlan1Args:
     constrain_llm_only_outputs: bool = True
 
 
+def _num_classes_for_dataset(dataset_name: str) -> int:
+    if dataset_name == "cifar10":
+        return 10
+    if dataset_name == "cifar100":
+        return 100
+    if dataset_name == "dtd":
+        return 47
+    raise ValueError(dataset_name)
+
+
 def _single_token_ids(tokenizer, text: str):
     ids = set()
     variants = [text, text.lower(), text.upper()]
@@ -71,9 +82,18 @@ def _single_token_ids(tokenizer, text: str):
 def _allowed_answer_token_ids(args: EvalPlan1Args, tokenizer, class_names):
     ids = set()
     if args.task_family == "single_image":
-        if args.qa_type == "yesno":
+        if args.qa_type in {"yesno", "yesno_set2"}:
             ids.update(_single_token_ids(tokenizer, "Yes"))
             ids.update(_single_token_ids(tokenizer, "No"))
+        elif args.qa_type == "label_code":
+            # Build a stable single-token code set (same candidate order as dataset codebook).
+            candidates = list("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()[]{}<>?/|")
+            for c in candidates:
+                if len(ids) >= len(class_names):
+                    break
+                one = _single_token_ids(tokenizer, c)
+                if one:
+                    ids.update(one)
         elif args.qa_type == "index":
             for i in range(len(class_names)):
                 ids.update(_single_token_ids(tokenizer, str(i)))
@@ -140,7 +160,7 @@ def _build_eval_dataset(args: EvalPlan1Args, tokenizer):
 
 def _build_connectors(args: EvalPlan1Args, model):
     hidden = model.config.hidden_size
-    num_classes = 10 if args.dataset_name == "cifar10" else 100
+    num_classes = _num_classes_for_dataset(args.dataset_name)
     vision_expert = build_vision_expert(
         expert_kind="classifier" if args.task_family == "population" else args.expert_kind,
         checkpoint_path=args.expert_checkpoint,
@@ -203,7 +223,7 @@ def evaluate_plan1(args: EvalPlan1Args) -> Dict[str, float]:
     if args.baseline == "injection":
         expert, vision_expert = _build_connectors(args, model)
     elif args.baseline in {"vision_only", "text_prompt"}:
-        num_classes = 10 if args.dataset_name == "cifar10" else 100
+        num_classes = _num_classes_for_dataset(args.dataset_name)
         vision_expert = build_vision_expert(
             expert_kind="classifier",
             checkpoint_path=args.expert_checkpoint,
@@ -217,8 +237,12 @@ def evaluate_plan1(args: EvalPlan1Args) -> Dict[str, float]:
     if args.evidence_source == "text":
         text_tokenizer = EncoderTokenizer.from_pretrained(args.text_encoder_model_id, cache_dir=args.mistral_models_path)
 
-    class_names = class_names_for_dataset(args.dataset_name)
+    eval_ds = eval_loader.dataset
+    class_names = getattr(eval_ds, "class_names", class_names_for_dataset(args.dataset_name))
+    qa_mode = getattr(eval_ds, "effective_qa_type", args.qa_type)
     allowed_token_ids = _allowed_answer_token_ids(args, tokenizer, class_names)
+    if qa_mode == "label_code" and getattr(eval_ds, "code_to_token_id", None) is not None:
+        allowed_token_ids = sorted(int(t) for t in eval_ds.code_to_token_id.values())
     model = model.to(device).to(torch.bfloat16 if device.type == "cuda" else torch.float32)
     if vision_expert is not None:
         vision_expert = vision_expert.to(device)
@@ -236,10 +260,35 @@ def evaluate_plan1(args: EvalPlan1Args) -> Dict[str, float]:
             if args.baseline == "vision_only":
                 if args.task_family == "single_image":
                     logits = vision_expert(batch["images"].to(device)).logits.float()
-                    preds = logits.argmax(dim=-1).cpu().tolist()
-                    gts = batch["labels"].cpu().tolist()
-                    correct += sum(int(a == b) for a, b in zip(preds, gts))
-                    total += len(gts)
+                    pred_cls = logits.argmax(dim=-1).cpu().tolist()
+                    if args.qa_type in {"yesno", "yesno_set2"}:
+                        # Question format from CIFARSingleImageQADataset: "Is this a {class}? ..."
+                        qtxts = batch["question_text"]
+                        asked_name_sets = []
+                        for q in qtxts:
+                            ql = q.lower()
+                            if "either " in ql and " or " in ql:
+                                inside = ql.split("either ", 1)[1].split("?", 1)[0]
+                                left, right = inside.split(" or ", 1)
+                                asked_name_sets.append({left.strip(), right.strip()})
+                            elif "is this a " in ql:
+                                asked = ql.split("is this a ", 1)[1].split("?", 1)[0].strip()
+                                asked_name_sets.append({asked})
+                            else:
+                                asked_name_sets.append(set())
+
+                        cls_name_to_idx = {name.lower(): i for i, name in enumerate(class_names)}
+                        pred_yesno = []
+                        for p, asked_set in zip(pred_cls, asked_name_sets):
+                            asked_indices = {cls_name_to_idx[a] for a in asked_set if a in cls_name_to_idx}
+                            pred_yesno.append(1 if p in asked_indices else 0)
+                        gt_yesno = [1 if a.lower().startswith("yes") else 0 for a in batch["answer_text"]]
+                        correct += sum(int(a == b) for a, b in zip(pred_yesno, gt_yesno))
+                        total += len(gt_yesno)
+                    else:
+                        gts = batch["labels"].cpu().tolist()
+                        correct += sum(int(a == b) for a, b in zip(pred_cls, gts))
+                        total += len(gts)
                 else:
                     images = batch["images"].to(device)
                     b, n = images.shape[:2]
@@ -250,6 +299,9 @@ def evaluate_plan1(args: EvalPlan1Args) -> Dict[str, float]:
                     frac = probs[torch.arange(b, device=device), target_class].cpu().numpy()
                     gt = batch["fraction"].cpu().numpy()
                     maes.extend(np.abs(frac - gt).tolist())
+                    pred_bin = [population_fraction_to_bin(float(x), mode=args.population_output_mode) for x in frac]
+                    gt_bin = [population_fraction_to_bin(float(x), mode=args.population_output_mode) for x in gt]
+                    correct += sum(int(a == b) for a, b in zip(pred_bin, gt_bin))
                     total += b
                 continue
 
@@ -287,7 +339,7 @@ def evaluate_plan1(args: EvalPlan1Args) -> Dict[str, float]:
                 outputs = model(tokens, attention_mask=mask, expert_inputs=(expert_inputs,), use_cache=False)
 
             next_logits = outputs.logits[:, -1, :]
-            if args.baseline in {"llm_only", "text_prompt"} and args.constrain_llm_only_outputs and allowed_token_ids:
+            if args.baseline in {"llm_only", "text_prompt", "injection"} and args.constrain_llm_only_outputs and allowed_token_ids:
                 allowed = torch.tensor(allowed_token_ids, device=next_logits.device, dtype=torch.long)
                 pred_local = next_logits.index_select(dim=-1, index=allowed).argmax(dim=-1)
                 pred_ids = allowed[pred_local].cpu().tolist()
@@ -296,12 +348,19 @@ def evaluate_plan1(args: EvalPlan1Args) -> Dict[str, float]:
             pred_texts = [tokenizer.decode([pid]).strip() for pid in pred_ids]
 
             if args.task_family == "single_image":
-                if args.qa_type == "yesno":
+                if qa_mode in {"yesno", "yesno_set2"}:
                     parsed_pred = [parse_yes_no_answer(x) for x in pred_texts]
                     gt = [1 if a.lower().startswith("yes") else 0 for a in batch["answer_text"]]
+                elif qa_mode == "label_code":
+                    gt_ids = batch["target_token_id"].cpu().tolist()
+                    for p, g in zip(pred_ids, gt_ids):
+                        if int(p) == int(g):
+                            correct += 1
+                        total += 1
+                    continue
                 else:
                     parsed_pred = [parse_label_answer(x, class_names) for x in pred_texts]
-                    if args.qa_type == "index":
+                    if qa_mode == "index":
                         gt = [int(x) for x in batch["answer_text"]]
                     else:
                         gt = [parse_label_answer(x, class_names) for x in batch["answer_text"]]

@@ -24,6 +24,7 @@ from src.multimodal.evidence import (
 )
 from src.multimodal.experts import build_vision_expert
 from src.multimodal.injection import EvidenceProjector, SemanticEvidenceDomainExpert
+from src.multimodal.tasks.prompts import class_names_for_dataset
 from src.multimodal.utils.logging_utils import MetricLogger
 from src.multimodal.utils.repro import save_run_config, save_versions, set_seed
 from transformers import AutoTokenizer as EncoderTokenizer
@@ -34,8 +35,8 @@ class TrainPlan1Args:
     mistral_models_path: str = "model/llm"
     model_name: str = "mistralai/Mistral-7B-Instruct-v0.3"
     run_dir: str = "runs/plan1_default"
-    dataset_name: str = "cifar10"
-    data_root: str = "./data/cifar10"
+    dataset_name: str = "dtd"
+    data_root: str = "./data"
     task_family: str = "single_image"
     evidence_source: str = "vision"  # vision|text|diffusion_future
     qa_type: str = "label"  # label|yesno|index
@@ -57,6 +58,7 @@ class TrainPlan1Args:
     max_train_samples: Optional[int] = None
     max_eval_samples: Optional[int] = 512
     eval_every_steps: int = 100
+    answer_only_loss: bool = True
     seed: int = 42
     device: str = "cuda"
 
@@ -83,9 +85,19 @@ def _build_model_and_tokenizer(args: TrainPlan1Args):
     return model, tokenizer
 
 
+def _num_classes_for_dataset(dataset_name: str) -> int:
+    if dataset_name == "cifar10":
+        return 10
+    if dataset_name == "cifar100":
+        return 100
+    if dataset_name == "dtd":
+        return 47
+    raise ValueError(dataset_name)
+
+
 def _attach_semantic_expert(args: TrainPlan1Args, model, tokenizer):
     hidden_size = model.config.hidden_size
-    num_classes = 10 if args.dataset_name == "cifar10" else 100
+    num_classes = _num_classes_for_dataset(args.dataset_name)
 
     if args.task_family == "population":
         evidence_builder = PopulationStatsEvidenceBuilder(
@@ -223,6 +235,58 @@ def _build_expert_inputs(args: TrainPlan1Args, batch: Dict, device, text_tokeniz
     raise ValueError(args.evidence_source)
 
 
+def _single_token_ids(tokenizer, text: str):
+    ids = set()
+    variants = [text, text.lower(), text.upper()]
+    for v in variants:
+        for prefix in (" ", ""):
+            toks = tokenizer.encode(prefix + v, add_special_tokens=False)
+            if len(toks) == 1:
+                ids.add(int(toks[0]))
+    return ids
+
+
+def _allowed_answer_token_ids(args: TrainPlan1Args, tokenizer, dataset):
+    ids = set()
+    qa_mode = getattr(dataset, "effective_qa_type", args.qa_type)
+    class_names = getattr(dataset, "class_names", class_names_for_dataset(args.dataset_name))
+    code_to_token_id = getattr(dataset, "code_to_token_id", None)
+
+    if args.task_family == "single_image":
+        if qa_mode in {"yesno", "yesno_set2"}:
+            ids.update(_single_token_ids(tokenizer, "Yes"))
+            ids.update(_single_token_ids(tokenizer, "No"))
+        elif qa_mode == "label_code" and code_to_token_id is not None:
+            ids.update(int(tid) for tid in code_to_token_id.values())
+        elif qa_mode == "index":
+            for i in range(len(class_names)):
+                ids.update(_single_token_ids(tokenizer, str(i)))
+        elif qa_mode == "label" and len(class_names) <= 26:
+            for i in range(len(class_names)):
+                ids.update(_single_token_ids(tokenizer, chr(ord("A") + i)))
+    else:
+        if args.population_output_mode == "integer":
+            for i in range(11):
+                ids.update(_single_token_ids(tokenizer, str(i)))
+        else:
+            for i in range(10):
+                ids.update(_single_token_ids(tokenizer, chr(ord("A") + i)))
+    return sorted(ids)
+
+
+def _subset_ce_loss(logits: torch.Tensor, targets: torch.Tensor, allowed_ids_device: Optional[torch.Tensor], fallback_ce):
+    if allowed_ids_device is None or allowed_ids_device.numel() == 0:
+        return fallback_ce(logits, targets)
+    subset_logits = logits.index_select(dim=-1, index=allowed_ids_device)
+    pos = torch.searchsorted(allowed_ids_device, targets)
+    in_range = pos < allowed_ids_device.numel()
+    safe_pos = torch.where(in_range, pos, torch.zeros_like(pos))
+    valid = in_range & (allowed_ids_device[safe_pos] == targets)
+    if not bool(valid.all()):
+        return fallback_ce(logits, targets)
+    return fallback_ce(subset_logits, pos)
+
+
 @torch.no_grad()
 def _evaluate(model, args, eval_loader, device, text_tokenizer, semantic_expert, vision_expert):
     model.eval()
@@ -258,10 +322,16 @@ def train_plan1(args: TrainPlan1Args):
 
     device = torch.device(args.device if torch.cuda.is_available() and args.device.startswith("cuda") else "cpu")
     model = model.to(device).to(torch.bfloat16 if device.type == "cuda" else torch.float32)
+    if vision_expert is not None:
+        vision_expert = vision_expert.to(device)
 
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable, lr=args.learning_rate)
     loss_fn = nn.CrossEntropyLoss()
+    allowed_ids = _allowed_answer_token_ids(args, tokenizer, train_loader.dataset)
+    allowed_ids_device = (
+        torch.tensor(allowed_ids, dtype=torch.long, device=device) if args.answer_only_loss and len(allowed_ids) > 0 else None
+    )
 
     global_step = 0
     best_eval = -1.0
@@ -275,7 +345,7 @@ def train_plan1(args: TrainPlan1Args):
             expert_inputs = _build_expert_inputs(args, batch, device, text_tokenizer, semantic_expert, vision_expert)
             outputs = model(tokens, attention_mask=mask, expert_inputs=expert_inputs, use_cache=False)
             logits = outputs.logits[:, -1, :]
-            loss = loss_fn(logits, targets)
+            loss = _subset_ce_loss(logits, targets, allowed_ids_device, loss_fn)
 
             optimizer.zero_grad()
             loss.backward()

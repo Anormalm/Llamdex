@@ -48,3 +48,10 @@ def population_bin_to_fraction_midpoint(bin_id: int, mode: str = "integer") -> f
         return bin_id / 10.0
     bin_id = max(0, min(9, int(bin_id)))
     return (bin_id + 0.5) / 10.0
+
+
+def population_fraction_to_bin(fraction: float, mode: str = "integer") -> int:
+    fraction = max(0.0, min(1.0, float(fraction)))
+    if mode == "integer":
+        return int(round(fraction * 10.0))
+    return min(9, int(fraction * 10.0))

@@ -196,6 +196,102 @@ Forward-pass validation (no training):
 python scripts/test_plan1_upgrade.py
 ```
 
+#### Meaningful Benchmark v1 (3 harder tasks)
+
+We added a benchmark runner for three more meaningful task tracks:
+- `single_yesno_vision`: semantic yes/no image QA (`qa_type=yesno`)
+- `single_label_text`: label prediction from text evidence path (`evidence_source=text`)
+- `population_fraction_vision`: grouped population fraction reasoning
+
+Run:
+```bash
+python scripts/benchmark_meaningful_v1.py \
+  --mistral_models_path runs/hf_cache_tiny \
+  --model_name hf-internal-testing/tiny-random-MistralForCausalLM \
+  --dataset_name dtd \
+  --data_root ./data \
+  --expert_checkpoint /path/to/dtd_resnet18_best.pt \
+  --connectors_path runs/plan1_iter_lr2e4/best_connectors.pt \
+  --batch_size 16 \
+  --max_eval_samples 1000 \
+  --device cuda
+```
+
+Recommended now:
+- Use non-CIFAR datasets first (default is `dtd` in `train_plan1.py` / `eval_plan1.py`).
+- Train a dataset-matched vision expert checkpoint before comparing `vision_only` vs `injection`.
+
+Train a DTD vision expert checkpoint:
+```bash
+python scripts/train_vision_expert.py \
+  --dataset_name dtd \
+  --data_root ./data \
+  --out_path runs/experts/dtd_resnet18_best.pt \
+  --epochs 5 \
+  --batch_size 128
+```
+
+Outputs:
+- `runs/benchmark_meaningful_v1.csv`
+- `runs/benchmark_meaningful_v1.json`
+- `runs/benchmark_meaningful_v1_dtd.csv`
+- `runs/benchmark_meaningful_v1_dtd.json`
+
+Historical run (2026-02-19, CIFAR setup):
+
+| Task | Baseline | Metric(s) |
+|---|---|---|
+| `single_yesno_vision` | `vision_only` | `accuracy=0.894` |
+| `single_yesno_vision` | `llm_only` | `accuracy=0.527` |
+| `single_yesno_vision` | `text_prompt` | `accuracy=0.527` |
+| `single_yesno_vision` | `injection` | `accuracy=0.000` |
+| `single_label_text` | `llm_only` | `accuracy=0.103` |
+| `single_label_text` | `injection` | `accuracy=0.000` |
+| `population_fraction_vision` | `vision_only` | `bin_accuracy=0.801`, `mae=0.0237` |
+| `population_fraction_vision` | `llm_only` | `bin_accuracy=0.000`, `mae=0.000` |
+| `population_fraction_vision` | `text_prompt` | `bin_accuracy=0.000`, `mae=0.000` |
+| `population_fraction_vision` | `injection` | `bin_accuracy=0.000`, `mae=0.000` |
+
+Important caveat:
+- `runs/plan1_iter_lr2e4/best_connectors.pt` was trained for the original single-label setup.
+- For meaningful v1 tasks, dedicated connector training per task is required; otherwise injection can collapse due to answer-format mismatch and task shift.
+
+Latest run (2026-02-26, DTD setup):
+
+| Task | Baseline | Metric(s) |
+|---|---|---|
+| `single_yesno_vision` | `vision_only` | `accuracy=0.505` |
+| `single_yesno_vision` | `llm_only` | `accuracy=0.495` |
+| `single_yesno_vision` | `text_prompt` | `accuracy=0.495` |
+| `single_yesno_vision` | `injection` | `accuracy=0.505` |
+| `single_yesno_text` | `llm_only` | `accuracy=0.495` |
+| `single_yesno_text` | `injection` | `accuracy=0.505` |
+| `population_fraction_vision` | `vision_only` | `bin_accuracy=0.850`, `mae=0.0265` |
+| `population_fraction_vision` | `llm_only` | `bin_accuracy=0.000`, `mae=0.000` |
+| `population_fraction_vision` | `text_prompt` | `bin_accuracy=0.000`, `mae=0.000` |
+| `population_fraction_vision` | `injection` | `bin_accuracy=0.8475`, `mae=0.0170` |
+
+Meaningful Benchmark v2 (2026-02-26, DTD setup; compositional + stable output):
+
+| Task | Baseline | Metric(s) |
+|---|---|---|
+| `single_yesno_set2_vision` | `vision_only` | `accuracy=0.5000` |
+| `single_yesno_set2_vision` | `llm_only` | `accuracy=0.5225` |
+| `single_yesno_set2_vision` | `text_prompt` | `accuracy=0.5225` |
+| `single_yesno_set2_vision` | `injection` | `accuracy=0.4775` |
+| `single_label_code_vision` | `vision_only` | `accuracy=0.0450` |
+| `single_label_code_vision` | `llm_only` | `accuracy=0.0000` |
+| `single_label_code_vision` | `text_prompt` | `accuracy=0.0000` |
+| `single_label_code_vision` | `injection` | `accuracy=0.4250` |
+| `population_fraction_vision` | `vision_only` | `bin_accuracy=0.8600`, `mae=0.0256` |
+| `population_fraction_vision` | `llm_only` | `bin_accuracy=0.0000`, `mae=0.0000` |
+| `population_fraction_vision` | `text_prompt` | `bin_accuracy=0.0000`, `mae=0.0000` |
+| `population_fraction_vision` | `injection` | `bin_accuracy=0.8475`, `mae=0.0170` |
+
+Artifacts:
+- `runs/benchmark_meaningful_v2_dtd_afterfix.csv`
+- `runs/benchmark_plan1_upgrade_log_2026-02-26.md`
+
 ## Plan 1: Semantic Evidence Injection
 
 Plan 1 adds a unified multimodal evidence path:

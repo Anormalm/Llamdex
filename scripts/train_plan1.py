@@ -12,11 +12,11 @@ def parse_args():
     p.add_argument("--mistral_models_path", type=str, default="model/llm")
     p.add_argument("--model_name", type=str, default="mistralai/Mistral-7B-Instruct-v0.3")
     p.add_argument("--run_dir", type=str, required=True)
-    p.add_argument("--dataset_name", type=str, default="cifar10", choices=["cifar10", "cifar100"])
-    p.add_argument("--data_root", type=str, default="./data/cifar10")
+    p.add_argument("--dataset_name", type=str, default="dtd", choices=["cifar10", "cifar100", "dtd"])
+    p.add_argument("--data_root", type=str, default="./data")
     p.add_argument("--task_family", type=str, default="single_image", choices=["single_image", "population"])
     p.add_argument("--evidence_source", type=str, default="vision", choices=["vision", "text", "diffusion_future"])
-    p.add_argument("--qa_type", type=str, default="label", choices=["label", "yesno", "index"])
+    p.add_argument("--qa_type", type=str, default="label", choices=["label", "yesno", "index", "label_code", "yesno_set2"])
     p.add_argument("--population_output_mode", type=str, default="integer", choices=["integer", "letter"])
     p.add_argument("--population_group_size", type=int, default=16)
     p.add_argument("--population_sigma", type=float, default=0.0)
@@ -35,6 +35,7 @@ def parse_args():
     p.add_argument("--max_train_samples", type=int, default=None)
     p.add_argument("--max_eval_samples", type=int, default=512)
     p.add_argument("--eval_every_steps", type=int, default=100)
+    p.add_argument("--answer_only_loss", type=int, default=1, choices=[0, 1])
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", type=str, default="cuda")
     return p.parse_args()
@@ -69,9 +70,9 @@ if __name__ == "__main__":
         max_train_samples=a.max_train_samples,
         max_eval_samples=a.max_eval_samples,
         eval_every_steps=a.eval_every_steps,
+        answer_only_loss=bool(a.answer_only_loss),
         seed=a.seed,
         device=a.device,
     )
     metrics = train_plan1(args)
     print(metrics)
-

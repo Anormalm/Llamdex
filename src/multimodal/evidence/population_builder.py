@@ -26,5 +26,5 @@ class PopulationStatsEvidenceBuilder(EvidenceBuilder):
         stats = torch.cat([mean_prob, torch.log1p(n_images)], dim=-1)
         if self.sigma > 0:
             stats = stats + torch.randn_like(stats) * self.sigma
+        stats = stats.to(dtype=self.stats_to_z.weight.dtype)
         return self.stats_to_z(stats)
-

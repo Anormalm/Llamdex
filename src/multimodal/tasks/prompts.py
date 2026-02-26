@@ -8,6 +8,8 @@ def class_names_for_dataset(dataset_name: str) -> List[str]:
         return ["airplane", "automobile", "bird", "cat", "deer", "dog", "frog", "horse", "ship", "truck"]
     if dataset_name == "cifar100":
         return [f"class_{i}" for i in range(100)]
+    if dataset_name == "dtd":
+        return [f"class_{i}" for i in range(47)]
     raise ValueError(f"Unsupported dataset: {dataset_name}")
 
 

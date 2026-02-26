@@ -28,6 +28,5 @@ class TextEvidenceBuilder(EvidenceBuilder):
 
     def forward(self, inputs: Dict[str, torch.Tensor]) -> torch.Tensor:
         outputs = self.encoder(input_ids=inputs["input_ids"], attention_mask=inputs["attention_mask"])
-        pooled = outputs.last_hidden_state[:, 0, :].float()
+        pooled = outputs.last_hidden_state[:, 0, :].to(dtype=self.text_to_z.weight.dtype)
         return self.text_to_z(pooled)
-
