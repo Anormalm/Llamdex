@@ -1,0 +1,59 @@
+{
+  "mistral_models_path": "runs/hf_cache_tiny",
+  "model_name": "hf-internal-testing/tiny-random-MistralForCausalLM",
+  "data_root": "./data",
+  "seed": 42,
+  "device": "cuda",
+  "learning_rate": 0.0002,
+  "evidence_dim": 256,
+  "num_tokens": 4,
+  "layer_idx": 0,
+  "alpha": 1.0,
+  "expert_type": "clip",
+  "expert_model_id": "openai/clip-vit-base-patch32",
+  "expert_output_dim": 512,
+  "use_runtime_detector": false,
+  "out_csv": "runs/task_matrix_results.csv",
+  "out_json": "runs/task_matrix_results.json",
+  "tasks": [
+    {
+      "name": "vqa",
+      "train_steps": 20,
+      "max_train_samples": 128,
+      "max_eval_samples": 64,
+      "batch_size": 4,
+      "constrained_decoding": true,
+      "vqa_hf_dataset_name": "Graphcore/gqa-lxmert",
+      "vqa_split": "validation[:192]",
+      "vqa_image_field": "image",
+      "vqa_question_field": "question",
+      "vqa_answer_field": "answer"
+    },
+    {
+      "name": "finegrained",
+      "train_steps": 50,
+      "max_train_samples": 512,
+      "max_eval_samples": 256,
+      "batch_size": 8,
+      "constrained_decoding": true
+    },
+    {
+      "name": "population",
+      "train_steps": 50,
+      "max_train_samples": 256,
+      "max_eval_samples": 128,
+      "batch_size": 8,
+      "constrained_decoding": true,
+      "population_group_size": 8
+    },
+    {
+      "name": "grounded_generation",
+      "train_steps": 50,
+      "max_train_samples": 512,
+      "max_eval_samples": 128,
+      "batch_size": 4,
+      "constrained_decoding": true
+    }
+  ]
+}
+

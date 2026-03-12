@@ -1,0 +1,104 @@
+{
+  "api_base_url": "https://api.openai.com/v1",
+  "api_chat_path": "/chat/completions",
+  "api_key_env": "OPENAI_API_KEY",
+  "timeout_s": 120,
+  "api_max_retries": 6,
+  "api_retry_base_s": 1.0,
+  "api_retry_max_s": 20.0,
+  "api_retry_jitter_s": 0.5,
+  "dataset_name": "dtd",
+  "dataset_names": [
+    "dtd",
+    "oxford_pet"
+  ],
+  "data_root": "./data",
+  "task_family": "single_image",
+  "qa_type": "label_code",
+  "population_output_mode": "integer",
+  "population_group_size": 8,
+  "batch_size": 1,
+  "max_eval_samples": 64,
+  "seed": 42,
+  "eval_repeats": 2,
+  "repeat_seed_stride": 1000,
+  "enable_llm_only": true,
+  "enable_two_stage": true,
+  "enable_vlm_direct": true,
+  "enable_rag": true,
+  "caption_prompt": "Describe this image in one short sentence.",
+  "rag_db_size": 256,
+  "llm_models": [
+    {
+      "name": "gpt-4.1",
+      "provider": "openai_compatible",
+      "model_id": "gpt-4.1",
+      "enabled": true,
+      "is_vision": false
+    },
+    {
+      "name": "gpt-4.1-mini",
+      "provider": "openai_compatible",
+      "model_id": "gpt-4.1-mini",
+      "enabled": true,
+      "is_vision": false
+    },
+    {
+      "name": "qwen3-235b",
+      "provider": "openai_compatible",
+      "model_id": "Qwen/Qwen3-235B-A22B-Instruct",
+      "enabled": false,
+      "is_vision": false,
+      "api_base_url": "http://localhost:8000/v1",
+      "api_chat_path": "/chat/completions",
+      "api_key_env": "QWEN3_API_KEY"
+    },
+    {
+      "name": "claude-sonnet-vision",
+      "provider": "openai_compatible",
+      "model_id": "claude-sonnet-4-5",
+      "enabled": false,
+      "is_vision": false,
+      "api_base_url": "https://api.anthropic.com/v1",
+      "api_chat_path": "/chat/completions",
+      "api_key_env": "ANTHROPIC_API_KEY"
+    }
+  ],
+  "vlm_models": [
+    {
+      "name": "gpt-4o",
+      "provider": "openai_compatible",
+      "model_id": "gpt-4o",
+      "enabled": true,
+      "is_vision": true
+    },
+    {
+      "name": "gpt-4o-mini",
+      "provider": "openai_compatible",
+      "model_id": "gpt-4o-mini",
+      "enabled": true,
+      "is_vision": true
+    },
+    {
+      "name": "qwen25-vl-72b-api",
+      "provider": "openai_compatible",
+      "model_id": "Qwen/Qwen2.5-VL-72B-Instruct",
+      "enabled": false,
+      "is_vision": true,
+      "api_base_url": "http://localhost:8000/v1",
+      "api_chat_path": "/chat/completions",
+      "api_key_env": "QWEN25_VL_API_KEY"
+    },
+    {
+      "name": "qwen2.5-vl-72b",
+      "provider": "openai_compatible",
+      "model_id": "Qwen/Qwen2.5-VL-72B-Instruct",
+      "enabled": false,
+      "is_vision": true
+    }
+  ],
+  "out_csv": "runs/api_baseline_suite_strong.csv",
+  "out_json": "runs/api_baseline_suite_strong.json",
+  "out_summary_csv": "runs/api_baseline_suite_strong.summary.csv",
+  "out_summary_json": "runs/api_baseline_suite_strong.summary.json"
+}

@@ -1,0 +1,51 @@
+{
+  "api_base_url": "https://api.openai.com/v1",
+  "api_chat_path": "/chat/completions",
+  "api_key_env": "OPENAI_API_KEY",
+  "timeout_s": 45,
+  "api_max_retries": 2,
+  "api_retry_base_s": 0.5,
+  "api_retry_max_s": 4.0,
+  "api_retry_jitter_s": 0.2,
+  "dataset_name": "dtd",
+  "dataset_names": [
+    "dtd"
+  ],
+  "data_root": "./data",
+  "task_family": "single_image",
+  "qa_type": "label_code",
+  "batch_size": 1,
+  "max_eval_samples": 16,
+  "seed": 42,
+  "eval_repeats": 1,
+  "repeat_seed_stride": 1000,
+  "verbose": true,
+  "log_every_samples": 4,
+  "enable_llm_only": true,
+  "enable_two_stage": true,
+  "enable_vlm_direct": true,
+  "enable_rag": true,
+  "rag_db_size": 64,
+  "llm_models": [
+    {
+      "name": "gpt-4.1-mini",
+      "provider": "openai_compatible",
+      "model_id": "gpt-4.1-mini",
+      "enabled": true,
+      "is_vision": false
+    }
+  ],
+  "vlm_models": [
+    {
+      "name": "gpt-4o-mini",
+      "provider": "openai_compatible",
+      "model_id": "gpt-4o-mini",
+      "enabled": true,
+      "is_vision": true
+    }
+  ],
+  "out_csv": "runs/api_baseline_suite_fastcheck.csv",
+  "out_json": "runs/api_baseline_suite_fastcheck.json",
+  "out_summary_csv": "runs/api_baseline_suite_fastcheck.summary.csv",
+  "out_summary_json": "runs/api_baseline_suite_fastcheck.summary.json"
+}

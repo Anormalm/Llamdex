@@ -21,6 +21,8 @@ def num_classes_for_dataset(dataset_name: str) -> int:
         return 100
     if dataset_name == "dtd":
         return 47
+    if dataset_name == "oxford_pet":
+        return 37
     raise ValueError(f"Unsupported dataset: {dataset_name}")
 
 
@@ -51,7 +53,7 @@ def build_transforms(dataset_name: str, train: bool):
             ]
         )
 
-    if dataset_name == "dtd":
+    if dataset_name in {"dtd", "oxford_pet"}:
         # DTD images are variable-sized; resize to a stable input shape.
         if train:
             return transforms.Compose(
@@ -89,6 +91,10 @@ def build_datasets(dataset_name: str, data_root: str):
         train_ds = datasets.DTD(root=data_root, split="train", download=True, transform=train_tf)
         eval_ds = datasets.DTD(root=data_root, split="test", download=True, transform=eval_tf)
         return train_ds, eval_ds
+    if dataset_name == "oxford_pet":
+        train_ds = datasets.OxfordIIITPet(root=data_root, split="trainval", target_types="category", download=True, transform=train_tf)
+        eval_ds = datasets.OxfordIIITPet(root=data_root, split="test", target_types="category", download=True, transform=eval_tf)
+        return train_ds, eval_ds
     raise ValueError(f"Unsupported dataset: {dataset_name}")
 
 
@@ -109,8 +115,8 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device, use_amp
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train vision expert checkpoint for Plan-1 (CIFAR/DTD)")
-    parser.add_argument("--dataset_name", type=str, default="dtd", choices=["cifar10", "cifar100", "dtd"])
+    parser = argparse.ArgumentParser(description="Train vision expert checkpoint for Plan-1 (CIFAR/DTD/OxfordPet)")
+    parser.add_argument("--dataset_name", type=str, default="dtd", choices=["cifar10", "cifar100", "dtd", "oxford_pet"])
     parser.add_argument("--data_root", type=str, default="./data")
     parser.add_argument("--out_path", type=str, default="runs/experts/dtd_resnet18_best.pt")
     parser.add_argument("--epochs", type=int, default=5)

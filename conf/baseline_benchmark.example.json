@@ -1,0 +1,38 @@
+{
+  "mistral_models_path": "runs/hf_cache_tiny",
+  "model_name": "hf-internal-testing/tiny-random-MistralForCausalLM",
+  "dataset_name": "dtd",
+  "data_root": "./data",
+  "task_family": "single_image",
+  "qa_type": "label_code",
+  "population_output_mode": "integer",
+  "population_group_size": 8,
+  "batch_size": 4,
+  "max_eval_samples": 64,
+  "device": "cuda",
+  "seed": 42,
+  "expert_checkpoint": "runs/experts/dtd_resnet18_best.pt",
+  "expert_init_weights": "imagenet",
+  "caption_model_id": "Salesforce/blip-image-captioning-base",
+  "rag_db_size": 128,
+  "frozen_vlms": [
+    {
+      "model_type": "llava_next",
+      "model_id": "llava-hf/llava-v1.6-mistral-7b-hf",
+      "enabled": false
+    },
+    {
+      "model_type": "qwen25_vl",
+      "model_id": "Qwen/Qwen2.5-VL-7B-Instruct",
+      "enabled": false
+    },
+    {
+      "model_type": "internvl",
+      "model_id": "OpenGVLab/InternVL2_5-8B",
+      "enabled": false
+    }
+  ],
+  "out_csv": "runs/baseline_suite_results.csv",
+  "out_json": "runs/baseline_suite_results.json"
+}
+

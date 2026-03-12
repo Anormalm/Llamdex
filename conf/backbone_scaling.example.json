@@ -1,0 +1,70 @@
+{
+  "dataset": "dtd",
+  "data_root": "./data",
+  "task": "single",
+  "qa_type": "label_code",
+  "population_output_mode": "integer",
+  "population_group_size": 8,
+  "expert_type": "clip",
+  "expert_model_id": "openai/clip-vit-base-patch32",
+  "expert_output_dim": 512,
+  "use_runtime_detector": false,
+  "backbone": "domain_mistral",
+  "base_k": 4,
+  "base_layer_idx": 0,
+  "base_evidence_dim": 256,
+  "alpha": 1.0,
+  "batch_size": 8,
+  "max_train_samples": 256,
+  "max_eval_samples": 128,
+  "train_steps": 20,
+  "learning_rate": 0.0002,
+  "k_grid": [1, 2, 4, 8],
+  "layer_grid": [0, 1],
+  "evidence_dim_grid": [128, 256, 512],
+  "language_prompts": [
+    "Summarize why deterministic seeds matter in model evaluation.",
+    "Explain overfitting in one short paragraph.",
+    "Write one sentence about why calibration matters.",
+    "List three risks of noisy labels."
+  ],
+  "language_max_new_tokens": 24,
+  "language_degradation_threshold": 0.25,
+  "language_tabular_dim": 16,
+  "seed": 42,
+  "device": "cuda",
+  "out_dir": "runs/backbone_scaling_suite",
+  "backbones": [
+    {
+      "name": "mistral-7b",
+      "model_name": "mistralai/Mistral-7B-Instruct-v0.3",
+      "mistral_models_path": "model/llm",
+      "enabled": true
+    },
+    {
+      "name": "llama3-8b",
+      "model_name": "meta-llama/Meta-Llama-3-8B-Instruct",
+      "mistral_models_path": "model/llm",
+      "enabled": true
+    },
+    {
+      "name": "qwen2.5-7b",
+      "model_name": "Qwen/Qwen2.5-7B-Instruct",
+      "mistral_models_path": "model/llm",
+      "enabled": true
+    },
+    {
+      "name": "qwen2.5-14b",
+      "model_name": "Qwen/Qwen2.5-14B-Instruct",
+      "mistral_models_path": "model/llm",
+      "enabled": true
+    },
+    {
+      "name": "llama3-70b-sanity",
+      "model_name": "meta-llama/Meta-Llama-3-70B-Instruct",
+      "mistral_models_path": "model/llm",
+      "enabled": false
+    }
+  ]
+}
+

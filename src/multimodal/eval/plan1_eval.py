@@ -16,6 +16,7 @@ from src.multimodal.data.cifar_qa import (
     collate_population,
     collate_single_image,
 )
+from src.multimodal.data.hospital_text_qa import HospitalTextQADataset, collate_hospital_text
 from src.multimodal.evidence import PopulationStatsEvidenceBuilder, TextEvidenceBuilder, VisionEvidenceBuilder
 from src.multimodal.experts import build_vision_expert
 from src.multimodal.injection import EvidenceProjector, SemanticEvidenceDomainExpert
@@ -27,6 +28,7 @@ from src.multimodal.tasks.parsing import (
     population_bin_to_fraction_midpoint,
 )
 from src.multimodal.tasks.prompts import class_names_for_dataset
+from src.multimodal.utils.backbone import resolve_backbone
 
 
 @dataclass
@@ -35,9 +37,11 @@ class EvalPlan1Args:
     model_name: str = "mistralai/Mistral-7B-Instruct-v0.3"
     connectors_path: Optional[str] = None
     dataset_name: str = "dtd"
+    hospital_eval_file: Optional[str] = None
     data_root: str = "./data"
     task_family: str = "single_image"
-    evidence_source: str = "vision"
+    evidence_source: str = "text"
+    description_file: Optional[str] = None
     qa_type: str = "label"
     population_output_mode: str = "integer"
     population_group_size: int = 16
@@ -56,6 +60,13 @@ class EvalPlan1Args:
     baseline: str = "injection"  # injection|vision_only|llm_only|text_prompt
     device: str = "cuda"
     constrain_llm_only_outputs: bool = True
+    use_adapters: bool = True
+    adapter_bottleneck: Optional[int] = 64
+    adapter_dropout: float = 0.0
+    adapter_activation: str = "gelu"
+    tune_layernorm: bool = False
+    inject_location: str = "post_attn"
+    enforce_checkpoint_compat: bool = False
 
 
 def _num_classes_for_dataset(dataset_name: str) -> int:
@@ -65,6 +76,10 @@ def _num_classes_for_dataset(dataset_name: str) -> int:
         return 100
     if dataset_name == "dtd":
         return 47
+    if dataset_name == "oxford_pet":
+        return 37
+    if dataset_name == "hospital_text":
+        return 2
     raise ValueError(dataset_name)
 
 
@@ -112,6 +127,10 @@ def _allowed_answer_token_ids(args: EvalPlan1Args, tokenizer, class_names):
 
 
 def _build_model(args: EvalPlan1Args):
+    resolved_model_name, reason = resolve_backbone(args.model_name, args.mistral_models_path)
+    if resolved_model_name != args.model_name:
+        print(f"[plan1] backbone: {args.model_name} -> {resolved_model_name} ({reason})")
+    args.model_name = resolved_model_name
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name,
         cache_dir=args.mistral_models_path,
@@ -130,10 +149,29 @@ def _build_model(args: EvalPlan1Args):
     model.generation_config.pad_token_id = tokenizer.pad_token_id
     for p in model.parameters():
         p.requires_grad = False
+    model.configure_injection_(layer_id=args.layer_to_add, inject_location=args.inject_location)
+    model.configure_adapters_(
+        use_adapters=args.use_adapters,
+        adapter_bottleneck=args.adapter_bottleneck,
+        adapter_dropout=args.adapter_dropout,
+        adapter_activation=args.adapter_activation,
+    )
+    model.set_layernorm_tuning_(requires_grad=False)
     return model, tokenizer
 
 
 def _build_eval_dataset(args: EvalPlan1Args, tokenizer):
+    if args.dataset_name == "hospital_text":
+        if not args.hospital_eval_file:
+            raise ValueError("hospital_text requires --hospital_eval_file")
+        ds = HospitalTextQADataset(
+            file_path=args.hospital_eval_file,
+            tokenizer=tokenizer,
+            qa_type=args.qa_type,
+            max_samples=args.max_eval_samples,
+        )
+        return DataLoader(ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_hospital_text)
+
     if args.task_family == "single_image":
         ds = CIFARSingleImageQADataset(
             root=args.data_root,
@@ -143,6 +181,7 @@ def _build_eval_dataset(args: EvalPlan1Args, tokenizer):
             mode=args.evidence_source if args.evidence_source in {"vision", "text"} else "vision",
             qa_type=args.qa_type,
             max_samples=args.max_eval_samples,
+            description_file=args.description_file,
         )
         return DataLoader(ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_single_image)
 
@@ -189,10 +228,58 @@ def _build_connectors(args: EvalPlan1Args, model):
     projector = EvidenceProjector(args.evidence_dim, hidden, args.num_tokens, alpha=args.alpha)
     expert = SemanticEvidenceDomainExpert(builder, projector)
     model.model.layers[args.layer_to_add].add_expert_(expert, map_to_expert_emb=None)
+
+    def _safe_load(module: torch.nn.Module, state_dict: Dict):
+        cur = module.state_dict()
+        keep = {}
+        for k, v in state_dict.items():
+            if k in cur and hasattr(v, "shape") and hasattr(cur[k], "shape") and tuple(v.shape) == tuple(cur[k].shape):
+                keep[k] = v
+        module.load_state_dict(keep, strict=False)
+
     if args.connectors_path:
         state = torch.load(args.connectors_path, map_location="cpu")
-        expert.evidence_builder.load_state_dict(state["evidence_builder"], strict=False)
-        expert.projector.load_state_dict(state["projector"], strict=False)
+        if args.enforce_checkpoint_compat and "args" in state and isinstance(state["args"], dict):
+            ck = state["args"]
+            checks = {
+                "dataset_name": args.dataset_name,
+                "task_family": args.task_family,
+                "qa_type": args.qa_type,
+                "evidence_source": args.evidence_source,
+                "evidence_dim": int(args.evidence_dim),
+                "num_tokens": int(args.num_tokens),
+                "layer_to_add": int(args.layer_to_add),
+                "expert_kind": args.expert_kind,
+                "expert_output_mode": args.expert_output_mode,
+                "use_adapters": bool(args.use_adapters),
+                "inject_location": args.inject_location,
+            }
+            mismatches = []
+            for k, v in checks.items():
+                if k in ck and ck[k] != v:
+                    mismatches.append(f"{k}: ckpt={ck[k]} vs eval={v}")
+            if mismatches:
+                raise ValueError(
+                    "Connector checkpoint is incompatible with current eval args. "
+                    "This often causes collapsed output. "
+                    "Mismatches: " + "; ".join(mismatches)
+                )
+        if "evidence_builder" in state:
+            _safe_load(expert.evidence_builder, state["evidence_builder"])
+        if "projector" in state:
+            _safe_load(expert.projector, state["projector"])
+        if "adapters" in state and args.use_adapters:
+            model.load_adapter_state_dict(state["adapters"], strict=False)
+        if "layernorm" in state and args.tune_layernorm:
+            for i, layer in enumerate(model.model.layers):
+                key = str(i)
+                if key not in state["layernorm"]:
+                    continue
+                ln_state = state["layernorm"][key]
+                if "input_layernorm" in ln_state:
+                    layer.input_layernorm.load_state_dict(ln_state["input_layernorm"], strict=False)
+                if "post_attention_layernorm" in ln_state:
+                    layer.post_attention_layernorm.load_state_dict(ln_state["post_attention_layernorm"], strict=False)
     return expert, vision_expert
 
 

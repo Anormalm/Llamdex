@@ -12,10 +12,14 @@ def parse_args():
     p.add_argument("--mistral_models_path", type=str, default="model/llm")
     p.add_argument("--model_name", type=str, default="mistralai/Mistral-7B-Instruct-v0.3")
     p.add_argument("--run_dir", type=str, required=True)
-    p.add_argument("--dataset_name", type=str, default="dtd", choices=["cifar10", "cifar100", "dtd"])
+    p.add_argument("--dataset_name", type=str, default="dtd", choices=["cifar10", "cifar100", "dtd", "oxford_pet", "hospital_text"])
     p.add_argument("--data_root", type=str, default="./data")
+    p.add_argument("--hospital_train_file", type=str, default=None)
+    p.add_argument("--hospital_eval_file", type=str, default=None)
     p.add_argument("--task_family", type=str, default="single_image", choices=["single_image", "population"])
-    p.add_argument("--evidence_source", type=str, default="vision", choices=["vision", "text", "diffusion_future"])
+    p.add_argument("--evidence_source", type=str, default="text", choices=["vision", "text", "diffusion_future"])
+    p.add_argument("--description_file", type=str, default=None,
+                   help="External text descriptions (json/jsonl/csv with index->description) for text evidence mode.")
     p.add_argument("--qa_type", type=str, default="label", choices=["label", "yesno", "index", "label_code", "yesno_set2"])
     p.add_argument("--population_output_mode", type=str, default="integer", choices=["integer", "letter"])
     p.add_argument("--population_group_size", type=int, default=16)
@@ -36,6 +40,12 @@ def parse_args():
     p.add_argument("--max_eval_samples", type=int, default=512)
     p.add_argument("--eval_every_steps", type=int, default=100)
     p.add_argument("--answer_only_loss", type=int, default=1, choices=[0, 1])
+    p.add_argument("--use_adapters", type=int, default=1, choices=[0, 1])
+    p.add_argument("--adapter_bottleneck", type=int, default=64)
+    p.add_argument("--adapter_dropout", type=float, default=0.0)
+    p.add_argument("--adapter_activation", type=str, default="gelu", choices=["gelu", "relu"])
+    p.add_argument("--tune_layernorm", type=int, default=0, choices=[0, 1])
+    p.add_argument("--inject_location", type=str, default="post_attn", choices=["layer_input", "post_attn", "pre_ffn", "post_ffn"])
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", type=str, default="cuda")
     return p.parse_args()
@@ -49,8 +59,11 @@ if __name__ == "__main__":
         run_dir=a.run_dir,
         dataset_name=a.dataset_name,
         data_root=a.data_root,
+        hospital_train_file=a.hospital_train_file,
+        hospital_eval_file=a.hospital_eval_file,
         task_family=a.task_family,
         evidence_source=a.evidence_source,
+        description_file=a.description_file,
         qa_type=a.qa_type,
         population_output_mode=a.population_output_mode,
         population_group_size=a.population_group_size,
@@ -71,6 +84,12 @@ if __name__ == "__main__":
         max_eval_samples=a.max_eval_samples,
         eval_every_steps=a.eval_every_steps,
         answer_only_loss=bool(a.answer_only_loss),
+        use_adapters=bool(a.use_adapters),
+        adapter_bottleneck=a.adapter_bottleneck,
+        adapter_dropout=a.adapter_dropout,
+        adapter_activation=a.adapter_activation,
+        tune_layernorm=bool(a.tune_layernorm),
+        inject_location=a.inject_location,
         seed=a.seed,
         device=a.device,
     )

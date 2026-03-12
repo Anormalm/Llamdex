@@ -4,6 +4,36 @@ This is the official repository of the EMNLP'25 (Main) paper: [Llamdex: Model-ba
 
 Llamdex provides a complete pipeline for customizing large language models to structured data domains. This release bundles training code, preprocessing utilities, analysis scripts, and reproducible baseline implementations so you can reproduce our experiments or adapt the workflow to new datasets.
 
+## Project Overview
+
+This repository currently has two production tracks:
+
+1. `Tabular Llamdex` (original EMNLP'25 system): schema-aware LLM customization for structured/private tabular data.
+2. `Multimodal Plan-1` (`src/multimodal/`): connector-only evidence injection for vision/text/population reasoning with frozen backbone LLMs.
+
+Plan-1 core interface:
+
+`EvidenceSource -> z -> EvidenceProjector -> token overwrite at layer k -> LLM reasoning`
+
+Production default (privacy-first):
+- `evidence_source=text` for Plan-1 train/eval scripts.
+- Raw image/video can stay local; server consumes only description-derived evidence.
+- Vision path remains available for benchmarking and ablations (`--evidence_source vision`).
+
+What stays frozen:
+- base LLM backbone
+- client expert models (vision encoder / text encoder)
+
+What is trainable:
+- evidence builders/projections needed to produce `z`
+- `EvidenceProjector` and injection connector parameters
+
+Main entrypoints:
+- Train/eval Plan-1: `scripts/train_plan1.py`, `scripts/eval_plan1.py`
+- API baseline suite: `scripts/run_api_baseline_suite.py`
+- Local baseline suite: `scripts/run_baseline_benchmark_suite.py`
+- Own-vs-API merge table: `scripts/compare_own_vs_api.py`
+
 ## Repository Layout
 
 ```
@@ -299,6 +329,25 @@ Plan 1 adds a unified multimodal evidence path:
 - reserved-token overwrite injection at one chosen LLM layer `k`
 - frozen base LLM + frozen client expert, trainable connectors only
 
+### Adapters + Injection Control Upgrade
+
+Plan-1 now supports Houlsby-style bottleneck adapters and explicit injection-point control.
+
+New controls:
+- `--use_adapters` (`0/1`, default `1`)
+- `--adapter_bottleneck` (default `64`)
+- `--adapter_dropout` (default `0.0`)
+- `--adapter_activation` (`gelu|relu`, default `gelu`)
+- `--tune_layernorm` (`0/1`, default `0`)
+- `--inject_location` (`layer_input|post_attn|pre_ffn|post_ffn`, default `post_attn`)
+
+Trainable scope when adapters enabled:
+- EvidenceBuilder + EvidenceProjector (existing connector params)
+- Adapter params (`attn_adapter`, `ffn_adapter`)
+- Optional LN params if `--tune_layernorm 1`
+
+Base LLM and expert encoders remain frozen.
+
 ### Current Architecture (Detailed)
 
 At runtime, Plan 1 follows a strict connector-only adaptation path:
@@ -346,6 +395,39 @@ Implementation anchors:
 
 ### Train / Eval CLI
 
+Description-first (recommended, privacy-first):
+```bash
+python scripts/train_plan1.py \
+  --run_dir runs/plan1_text_privacy \
+  --dataset_name dtd \
+  --evidence_source text \
+  --description_file data/dtd_descriptions_train.jsonl \
+  --qa_type label \
+  --use_adapters 1 \
+  --adapter_bottleneck 64 \
+  --inject_location post_attn
+```
+
+```bash
+python scripts/eval_plan1.py \
+  --dataset_name dtd \
+  --evidence_source text \
+  --description_file data/dtd_descriptions_test.jsonl \
+  --qa_type label \
+  --baseline injection \
+  --connectors_path runs/plan1_text_privacy/best_connectors.pt
+```
+
+Supported description file formats (`--description_file`):
+- `jsonl`: one object per line, with `index` and `description`
+- `csv`: columns `index,description`
+- `json`: either `{ "0": "...", "1": "..." }` or list format
+
+Example JSONL row:
+```json
+{"index": 42, "description": "Irregular spiculated mass in upper outer quadrant, size 12 mm, increased from prior."}
+```
+
 Single-image label-only, vision evidence:
 ```bash
 python scripts/train_plan1.py \
@@ -359,6 +441,20 @@ python scripts/train_plan1.py \
   --layer 0
 ```
 
+Train with adapters + recommended post-attention injection:
+```bash
+python scripts/train_plan1.py \
+  --run_dir runs/plan1_adapt_postattn \
+  --task_family single_image \
+  --evidence_source vision \
+  --qa_type yesno \
+  --use_adapters 1 \
+  --adapter_bottleneck 64 \
+  --inject_location post_attn \
+  --layer 0 \
+  --num_tokens 8
+```
+
 ```bash
 python scripts/eval_plan1.py \
   --task_family single_image \
@@ -367,6 +463,11 @@ python scripts/eval_plan1.py \
   --baseline injection \
   --connectors_path runs/plan1_label_vision/best_connectors.pt
 ```
+
+Hardening switches (recommended):
+- `--model_name auto`: auto-select strongest cached backbone that fits local hardware.
+- `--enforce_checkpoint_compat 1` (eval): fail fast on checkpoint/task mismatch (prevents silent output collapse).
+- `--use_adapters 1 --inject_location post_attn`: stable default for stronger tasks.
 
 Description-only mode:
 ```bash
@@ -430,8 +531,65 @@ python scripts/train_plan1.py \
 python scripts/run_plan1_ablation.py \
   --tokens_grid 1 4 8 16 \
   --layers 0 8 16 24 \
+  --inject_locations post_attn pre_ffn post_ffn \
+  --use_adapters 1 \
+  --adapter_bottlenecks 32 64 128 \
   --output_csv runs/plan1_ablation_summary.csv
 ```
+
+`run_plan1_ablation.py` now writes parsed `accuracy` and also a best-row file:
+- `<output_csv>.best.csv`
+
+### Checkpoint-backed adapter/injection ablation (2026-03-05)
+
+To avoid random-head artifacts, the runs below use dataset-matched expert checkpoints:
+- DTD expert: `runs/experts/dtd_resnet18_best.pt`
+- Oxford-IIIT Pet expert: `runs/experts/oxford_pet_resnet18_best.pt`
+
+Settings:
+- model: `hf-internal-testing/tiny-random-MistralForCausalLM`
+- adapters: `use_adapters=1`, `adapter_bottleneck=64`, `tune_layernorm=0`
+- grid: `num_tokens in {4,8,16}`, `inject_location in {post_attn, pre_ffn, post_ffn}`
+- budget: `max_train_samples=256`, `max_eval_samples=256`
+
+Results summary:
+
+| Dataset | Best Config(s) | Best Accuracy | Pattern |
+|---|---|---:|---|
+| DTD | `num_tokens=8`, `post_attn` or `post_ffn` | 0.6563 | `pre_ffn` collapses (0.0039-0.0313) |
+| Oxford-IIIT Pet | `num_tokens=4`, `post_attn` or `post_ffn` | 0.7461 | `pre_ffn` collapses (0.0313-0.0391) |
+
+Artifacts:
+- `runs/plan1_adapter_inject_ablation_dtd_stable_ckpt.csv`
+- `runs/plan1_adapter_inject_ablation_oxford_stable_ckpt.csv`
+
+### Evidence quality diagnostics
+
+Before blaming injection or backbone, check whether evidence vectors `z` are separable:
+
+```bash
+python scripts/analyze_evidence_quality.py \
+  --dataset_name oxford_pet \
+  --evidence_source vision \
+  --evidence_dim 256 \
+  --expert_kind classifier \
+  --expert_output_mode logits \
+  --expert_checkpoint runs/experts/oxford_pet_resnet18_best.pt \
+  --connectors_path runs/plan1_adapter_inject_ablation_oxford_ckpt/tokens4_layer0_post_attn_adapt1_b64_ln0/last_connectors.pt \
+  --max_train_samples 512 \
+  --max_eval_samples 256 \
+  --out_csv runs/evidence_quality_oxford_probe.csv \
+  --out_json runs/evidence_quality_oxford_probe.json
+```
+
+Reported metrics:
+- `probe_acc`: linear-probe accuracy on `z`
+- `centroid_margin`: average pairwise class-centroid distance
+
+Practical default for harder tasks:
+- `--use_adapters 1`
+- `--adapter_bottleneck 64`
+- `--inject_location post_attn` (or `post_ffn` if preferred)
 
 ### Smoke tests
 
@@ -463,6 +621,146 @@ Notes:
 - For tiny random LLM backbones, constrained decoding prevents punctuation collapse in `llm_only`/`text_prompt` and forces valid task-token outputs.
 - Benchmark artifact CSV: `runs/benchmark_plan1_2026-02-14.csv`
 - Iteration run: `runs/plan1_iter_lr2e4` with `best_eval_acc=0.839`
+
+## API Baseline Suite (External SOTA-style Comparison)
+
+The API suite evaluates realistic external baselines under the same constrained answer protocol.
+
+Core files:
+- Runner: `scripts/run_api_baseline_suite.py`
+- Implementation: `src/multimodal/baselines/api_suite.py`
+- Strong config: `conf/api_baseline_sota.strong.json`
+
+Supported modes:
+- `api_frozen_vlm` (direct image -> answer)
+- `api_two_stage` (image -> caption -> answer)
+- `api_llm_only` (floor baseline)
+- `api_rag` (text retrieval baseline)
+
+Runner features:
+- deterministic repeats with seed control
+- aggregate mean/std/CI95 summaries
+- per-model endpoint and API key override (for multi-provider serving)
+- retry/backoff for transient API failures
+
+Run:
+```bash
+python scripts/run_api_baseline_suite.py --config conf/api_baseline_sota.strong.json
+```
+
+Artifacts:
+- detailed rows: `runs/api_baseline_suite_strong.csv`, `runs/api_baseline_suite_strong.json`
+- summary rows: `runs/api_baseline_suite_strong.summary.csv`, `runs/api_baseline_suite_strong.summary.json`
+
+## Own Model vs API Leaderboard
+
+Run local (own-model) baseline suite and merge with API summary:
+
+```bash
+python scripts/run_baseline_benchmark_suite.py --config conf/baseline_benchmark.expanded.json
+python scripts/compare_own_vs_api.py \
+  --local_csv runs/baseline_suite_expanded.csv \
+  --api_summary_csv runs/api_baseline_suite_strong.summary.csv \
+  --max_failure_rate 0.0 \
+  --out_csv runs/own_vs_api_leaderboard.csv
+```
+
+Merged leaderboard artifact:
+- `runs/own_vs_api_leaderboard.csv`
+
+## Current Status Snapshot (2026-03-11)
+
+This is the current project status for the multimodal Plan-1 track.
+
+### Architecture and training status
+
+Current runtime path:
+
+`EvidenceSource -> z -> EvidenceProjector -> reserved-token overwrite at layer k -> frozen LLM reasoning`
+
+Current implementation status:
+- Frozen backbone LLM + frozen client experts are preserved.
+- Trainable scope: evidence connector modules, projector, and optional Houlsby adapters.
+- Explicit injection-point control is implemented:
+  - `layer_input | post_attn | pre_ffn | post_ffn`
+- Checkpoint compatibility guard is implemented in eval (`--enforce_checkpoint_compat 1`) to block mismatched task/checkpoint runs that previously caused collapsed metrics.
+- `llm_only` scoring for yes/no baselines is semantic (not strict token-id only), so floor baselines are meaningful.
+
+### Local matched-protocol benchmark (repeat-2)
+
+Setup:
+- backbone: `hf-internal-testing/tiny-random-MistralForCausalLM`
+- repeats: `2` (`seed=42`, `seed=1042`)
+- eval budget: `64`
+- protocol: task-matched checkpoint + args
+
+Artifact:
+- `runs/benchmark_local_matched_repeat2_summary_2026-03-11.csv`
+
+Results:
+
+| Dataset | Model | Accuracy Mean | Accuracy CI95 | Latency Mean (s/sample) |
+|---|---|---:|---:|---:|
+| DTD | `injection` | 0.781250 | 0.000000 | 0.054981 |
+| DTD | `expert_only` | 0.031250 | 0.000000 | 0.015018 |
+| DTD | `llm_only` | 0.000000 | 0.000000 | 0.005328 |
+| Oxford-IIIT Pet | `injection` | 0.890625 | 0.000000 | 0.060251 |
+| Oxford-IIIT Pet | `expert_only` | 0.093750 | 0.000000 | 0.014535 |
+| Oxford-IIIT Pet | `llm_only` | 0.000000 | 0.000000 | 0.005291 |
+
+### Semantic llm_only benchmark (yes/no floor)
+
+To avoid degenerate floor metrics from strict token-id matching, yes/no baselines are evaluated semantically.
+
+Artifact:
+- `runs/benchmark_llm_only_yesno_2026-03-11.csv`
+
+Results:
+
+| Dataset | Model | Accuracy | F1 | Latency (s/sample) |
+|---|---|---:|---:|---:|
+| DTD | `llm_only` | 0.480469 | 0.324538 | 0.021052 |
+| Oxford-IIIT Pet | `llm_only` | 0.531250 | 0.346939 | 0.014022 |
+
+Interpretation:
+- `llm_only` is now a meaningful floor on yes/no tasks (near chance as expected on balanced binary prompts).
+- Injection remains the strongest local model under matched protocols.
+
+### Hospital text dataset support (industry path)
+
+Plan-1 supports `dataset_name=hospital_text` for description-only clinical workflows.
+
+Required input columns (CSV/JSONL):
+- `description` (or `text`/`report`)
+- `label` (or `target`/`class`)
+
+Train/eval:
+```bash
+python scripts/train_plan1.py   --run_dir runs/plan1_hospital_text   --dataset_name hospital_text   --hospital_train_file runs/hospital_train.csv   --hospital_eval_file runs/hospital_eval.csv   --evidence_source text   --qa_type label_code   --use_adapters 1   --adapter_bottleneck 64   --inject_location post_attn
+```
+
+```bash
+python scripts/eval_plan1.py   --dataset_name hospital_text   --hospital_eval_file runs/hospital_eval.csv   --evidence_source text   --qa_type label_code   --baseline injection   --connectors_path runs/plan1_hospital_text/best_connectors.pt
+```
+
+Text-only hospital baseline suite:
+```bash
+python scripts/run_text_only_baseline_suite.py   --train_file runs/hospital_train.csv   --eval_file runs/hospital_eval.csv   --qa_type yesno   --out_csv runs/hospital_text_baseline_suite_yesno.csv
+```
+
+Latest demo repeat-2 artifacts:
+- `runs/hospital_text_baseline_suite_yesno_repeat2_detailed.csv`
+- `runs/hospital_text_baseline_suite_yesno_repeat2_summary.csv`
+
+Latest demo readout (`hospital_*_demo.csv`, yes/no):
+- `injection_text_privacy`: `0.515`
+- `llm_only`: `0.515`
+- `majority_label`: `0.480`
+- `tfidf_logreg`: `1.000`
+
+Note:
+- Demo hospital files are sanity datasets, not final clinical-scale benchmarks.
+- For industry claims, replace with a real de-identified hospital split and rerun the same scripts.
 
 ## Baselines
 

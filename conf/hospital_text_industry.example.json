@@ -1,0 +1,22 @@
+{
+  "mistral_models_path": "model/llm",
+  "model_name": "mistralai/Mistral-7B-Instruct-v0.3",
+  "train_file": "runs/hospital_train.csv",
+  "eval_file": "runs/hospital_eval.csv",
+  "run_dir": "runs/plan1_hospital_text_industry",
+  "qa_type": "yesno",
+  "batch_size": 16,
+  "num_epochs": 5,
+  "learning_rate": 0.0001,
+  "max_train_samples": null,
+  "max_eval_samples": 1024,
+  "num_tokens": 8,
+  "layer": 0,
+  "evidence_dim": 256,
+  "alpha": 1.0,
+  "device": "cuda",
+  "seed": 42,
+  "out_csv": "runs/hospital_text_baseline_suite_industry.csv",
+  "out_json": "runs/hospital_text_baseline_suite_industry.json"
+}
+

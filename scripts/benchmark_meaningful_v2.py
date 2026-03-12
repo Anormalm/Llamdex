@@ -32,6 +32,12 @@ def main():
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--out_csv", type=str, default="runs/benchmark_meaningful_v2_dtd.csv")
     p.add_argument("--out_json", type=str, default="runs/benchmark_meaningful_v2_dtd.json")
+    p.add_argument("--use_adapters", type=int, default=1, choices=[0, 1])
+    p.add_argument("--adapter_bottleneck", type=int, default=64)
+    p.add_argument("--adapter_dropout", type=float, default=0.0)
+    p.add_argument("--adapter_activation", type=str, default="gelu", choices=["gelu", "relu"])
+    p.add_argument("--tune_layernorm", type=int, default=0, choices=[0, 1])
+    p.add_argument("--inject_location", type=str, default="post_attn", choices=["layer_input", "post_attn", "pre_ffn", "post_ffn"])
     a = p.parse_args()
 
     os.makedirs(os.path.dirname(a.out_csv), exist_ok=True)
@@ -118,6 +124,12 @@ def main():
                 baseline=baseline,
                 device=a.device,
                 constrain_llm_only_outputs=spec["constrain_llm_only_outputs"],
+                use_adapters=bool(a.use_adapters),
+                adapter_bottleneck=a.adapter_bottleneck,
+                adapter_dropout=a.adapter_dropout,
+                adapter_activation=a.adapter_activation,
+                tune_layernorm=bool(a.tune_layernorm),
+                inject_location=a.inject_location,
             )
             metrics, dt = run_case(eval_args)
             row = {"task_name": spec["task_name"], "baseline": baseline, "wall_time_s": round(dt, 2)}

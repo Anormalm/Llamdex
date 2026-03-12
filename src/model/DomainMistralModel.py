@@ -1,6 +1,6 @@
 import os
 import warnings
-from typing import Callable
+from typing import Callable, Dict
 
 from pandas.core.roperator import rand_
 from transformers import PretrainedConfig
@@ -33,10 +33,38 @@ from .util import SwiGLU, SimpleMLP, XGBoostModule
 logger = logging.get_logger(__name__)
 
 
+class AdapterLayer(nn.Module):
+    def __init__(
+        self,
+        hidden_size: int,
+        bottleneck: int,
+        dropout: float = 0.0,
+        activation: str = "gelu",
+        up_init_std: float = 1e-4,
+    ):
+        super().__init__()
+        self.down = nn.Linear(hidden_size, bottleneck, bias=True)
+        self.up = nn.Linear(bottleneck, hidden_size, bias=True)
+        self.dropout = nn.Dropout(dropout)
+        if activation == "gelu":
+            self.act = nn.GELU()
+        elif activation == "relu":
+            self.act = nn.ReLU()
+        else:
+            raise ValueError(f"Unsupported adapter activation: {activation}")
+        nn.init.normal_(self.up.weight, mean=0.0, std=up_init_std)
+        nn.init.zeros_(self.up.bias)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        delta = self.up(self.dropout(self.act(self.down(x))))
+        return x + delta
+
+
 class DomainMistralDecoderLayer(nn.Module):
-    def __init__(self, layer: MistralDecoderLayer, maps_to_expert_emb=None):
+    def __init__(self, layer: MistralDecoderLayer, maps_to_expert_emb=None, layer_idx: int = -1):
         super().__init__()
         self.hidden_size = layer.hidden_size
+        self.layer_idx = layer_idx
 
         self.self_attn = layer.self_attn
 
@@ -48,6 +76,55 @@ class DomainMistralDecoderLayer(nn.Module):
         self.maps_to_expert_emb = maps_to_expert_emb if maps_to_expert_emb is not None else []
 
         self.expert_output_layernorm = nn.LayerNorm(self.hidden_size)
+        self.use_adapters = False
+        self.adapter_bottleneck = None
+        self.attn_adapter = None
+        self.ffn_adapter = None
+        self._debug_last_injection_location = None
+        self._debug_last_overwrite_slice = None
+
+    def enable_adapters_(
+        self,
+        adapter_bottleneck: int,
+        adapter_dropout: float = 0.0,
+        adapter_activation: str = "gelu",
+    ):
+        self.use_adapters = True
+        self.adapter_bottleneck = int(adapter_bottleneck)
+        self.attn_adapter = AdapterLayer(
+            hidden_size=self.hidden_size,
+            bottleneck=self.adapter_bottleneck,
+            dropout=adapter_dropout,
+            activation=adapter_activation,
+        )
+        self.ffn_adapter = AdapterLayer(
+            hidden_size=self.hidden_size,
+            bottleneck=self.adapter_bottleneck,
+            dropout=adapter_dropout,
+            activation=adapter_activation,
+        )
+
+    def disable_adapters_(self):
+        self.use_adapters = False
+        self.attn_adapter = None
+        self.ffn_adapter = None
+
+    def _apply_injection(
+        self,
+        hidden_states: torch.Tensor,
+        injected_tokens: Optional[torch.Tensor],
+        location: str,
+    ) -> torch.Tensor:
+        if injected_tokens is None:
+            return hidden_states
+        t = injected_tokens.size(1)
+        if t <= 0:
+            return hidden_states
+        hidden_states = hidden_states.clone()
+        hidden_states[:, -t:, :] = injected_tokens
+        self._debug_last_injection_location = location
+        self._debug_last_overwrite_slice = hidden_states[:, -t:, :].detach().cpu()
+        return hidden_states
 
     def add_expert_(self, expert: DomainExpert, map_to_expert_emb: Callable = None):
         self.experts.append(expert)
@@ -69,6 +146,8 @@ class DomainMistralDecoderLayer(nn.Module):
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         expert_weight: Optional[float] = None,
+        inject_layer_id: Optional[int] = None,
+        inject_location: str = "post_attn",
         **kwargs,
 
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
@@ -98,6 +177,7 @@ class DomainMistralDecoderLayer(nn.Module):
         """
 
         ############### Modified from original code to support the use of domain expert #########################
+        injected_tokens = None
         if self.num_experts > 0:
             expert_out_tuple = ()
             for i in range(self.num_experts):
@@ -121,7 +201,13 @@ class DomainMistralDecoderLayer(nn.Module):
             # LayerNorm for hidden state right
             hidden_states_right = self.expert_output_layernorm(hidden_states_right)
 
-            hidden_states = torch.cat((hidden_states_left, hidden_states_right), dim=1)
+            injected_tokens = hidden_states_right
+
+        should_inject_here = (inject_layer_id is None and self.num_experts > 0) or (
+            inject_layer_id is not None and self.layer_idx == int(inject_layer_id) and self.num_experts > 0
+        )
+        if should_inject_here and inject_location == "layer_input":
+            hidden_states = self._apply_injection(hidden_states, injected_tokens, location="layer_input")
 
         ##########################################################################################################
 
@@ -130,7 +216,7 @@ class DomainMistralDecoderLayer(nn.Module):
         hidden_states = self.input_layernorm(hidden_states)
 
         # Self Attention
-        hidden_states, self_attn_weights, present_key_value = self.self_attn(
+        attn_out, self_attn_weights, present_key_value = self.self_attn(
             hidden_states=hidden_states,
             attention_mask=attention_mask,
             position_ids=position_ids,
@@ -139,14 +225,24 @@ class DomainMistralDecoderLayer(nn.Module):
             use_cache=use_cache,
             cache_position=None,
         )
-        hidden_states = residual + hidden_states
+        if self.use_adapters and self.attn_adapter is not None:
+            attn_out = self.attn_adapter(attn_out)
+        hidden_states = residual + attn_out
+        if should_inject_here and inject_location == "post_attn":
+            hidden_states = self._apply_injection(hidden_states, injected_tokens, location="post_attn")
 
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
-        hidden_states = self.mlp(hidden_states)
+        if should_inject_here and inject_location == "pre_ffn":
+            hidden_states = self._apply_injection(hidden_states, injected_tokens, location="pre_ffn")
+        ffn_out = self.mlp(hidden_states)
+        if self.use_adapters and self.ffn_adapter is not None:
+            ffn_out = self.ffn_adapter(ffn_out)
 
-        hidden_states = residual + hidden_states
+        hidden_states = residual + ffn_out
+        if should_inject_here and inject_location == "post_ffn":
+            hidden_states = self._apply_injection(hidden_states, injected_tokens, location="post_ffn")
 
         outputs = (hidden_states,)
 
@@ -165,7 +261,7 @@ class DomainMistralModel(MistralModel):
             setattr(self, attr_name, attr_value)
 
         for i in range(len(self.layers)):
-            layer = DomainMistralDecoderLayer(self.layers[i])
+            layer = DomainMistralDecoderLayer(self.layers[i], layer_idx=i)
             self.layers[i] = layer
 
     @add_start_docstrings_to_model_forward(MISTRAL_INPUTS_DOCSTRING)
@@ -183,6 +279,8 @@ class DomainMistralModel(MistralModel):
         return_dict: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
         expert_weight: Optional[float] = None,
+        inject_layer_id: Optional[int] = None,
+        inject_location: str = "post_attn",
     ) -> Union[Tuple, BaseModelOutputWithPast]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -270,6 +368,8 @@ class DomainMistralModel(MistralModel):
                     use_cache,
                     cache_position,
                     expert_weight,
+                    inject_layer_id,
+                    inject_location,
                 )
             else:
                 layer_outputs = decoder_layer(
@@ -282,6 +382,8 @@ class DomainMistralModel(MistralModel):
                     use_cache=use_cache,
                     cache_position=cache_position,
                     expert_weight=expert_weight,
+                    inject_layer_id=inject_layer_id,
+                    inject_location=inject_location,
                 )
 
             hidden_states = layer_outputs[0]
@@ -319,6 +421,74 @@ class DomainMistralForCausalLM(MistralForCausalLM):
         self.num_tokens = 0
         self.tokenizer = tokenizer  # tokenizer for expert embedding translation
         self.llamdex_padding = llamdex_padding
+        self.inject_layer_id = None
+        self.inject_location = "post_attn"
+        self.use_adapters = False
+
+    def configure_injection_(self, layer_id: Optional[int], inject_location: str = "post_attn"):
+        valid = {"layer_input", "post_attn", "pre_ffn", "post_ffn"}
+        if inject_location not in valid:
+            raise ValueError(f"Unsupported inject_location: {inject_location}")
+        self.inject_layer_id = layer_id
+        self.inject_location = inject_location
+
+    def configure_adapters_(
+        self,
+        use_adapters: bool = False,
+        adapter_bottleneck: Optional[int] = None,
+        adapter_dropout: float = 0.0,
+        adapter_activation: str = "gelu",
+    ):
+        self.use_adapters = bool(use_adapters)
+        if adapter_bottleneck is None:
+            adapter_bottleneck = max(1, self.config.hidden_size // 16)
+        for layer in self.model.layers:
+            if not isinstance(layer, DomainMistralDecoderLayer):
+                continue
+            if self.use_adapters:
+                layer.enable_adapters_(
+                    adapter_bottleneck=adapter_bottleneck,
+                    adapter_dropout=adapter_dropout,
+                    adapter_activation=adapter_activation,
+                )
+            else:
+                layer.disable_adapters_()
+
+    def set_layernorm_tuning_(self, requires_grad: bool = False):
+        for layer in self.model.layers:
+            if not isinstance(layer, DomainMistralDecoderLayer):
+                continue
+            for p in layer.input_layernorm.parameters():
+                p.requires_grad = requires_grad
+            for p in layer.post_attention_layernorm.parameters():
+                p.requires_grad = requires_grad
+
+    def adapter_state_dict(self) -> Dict[str, Dict[str, torch.Tensor]]:
+        out: Dict[str, Dict[str, torch.Tensor]] = {}
+        for i, layer in enumerate(self.model.layers):
+            if not isinstance(layer, DomainMistralDecoderLayer):
+                continue
+            if layer.attn_adapter is not None and layer.ffn_adapter is not None:
+                out[str(i)] = {
+                    "attn_adapter": layer.attn_adapter.state_dict(),
+                    "ffn_adapter": layer.ffn_adapter.state_dict(),
+                }
+        return out
+
+    def load_adapter_state_dict(self, state: Dict[str, Dict[str, Dict[str, torch.Tensor]]], strict: bool = False):
+        for k, layer_state in state.items():
+            i = int(k)
+            if i < 0 or i >= len(self.model.layers):
+                continue
+            layer = self.model.layers[i]
+            if not isinstance(layer, DomainMistralDecoderLayer):
+                continue
+            if layer.attn_adapter is None or layer.ffn_adapter is None:
+                continue
+            if "attn_adapter" in layer_state:
+                layer.attn_adapter.load_state_dict(layer_state["attn_adapter"], strict=strict)
+            if "ffn_adapter" in layer_state:
+                layer.ffn_adapter.load_state_dict(layer_state["ffn_adapter"], strict=strict)
 
     def add_expert_(self, expert: DomainExpert, layer_id: int | list[int] = None, copy=True, disable_emb_translate=False):
         """
@@ -414,7 +584,7 @@ class DomainMistralForCausalLM(MistralForCausalLM):
 
         # initialize each layer
         for i in range(len(model.model.layers)):
-            model.model.layers[i] = DomainMistralDecoderLayer(model.model.layers[i])
+            model.model.layers[i] = DomainMistralDecoderLayer(model.model.layers[i], layer_idx=i)
 
         return model
 
@@ -515,6 +685,8 @@ class DomainMistralForCausalLM(MistralForCausalLM):
             return_dict=return_dict,
             cache_position=cache_position,
             expert_weight=expert_weight,
+            inject_layer_id=self.inject_layer_id,
+            inject_location=self.inject_location,
         )
 
         hidden_states = outputs[0]

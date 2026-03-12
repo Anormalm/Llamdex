@@ -16,6 +16,7 @@ from src.multimodal.data.cifar_qa import (
     collate_population,
     collate_single_image,
 )
+from src.multimodal.data.hospital_text_qa import HospitalTextQADataset, collate_hospital_text
 from src.multimodal.evidence import (
     DiffusionFutureEvidenceBuilder,
     PopulationStatsEvidenceBuilder,
@@ -25,6 +26,7 @@ from src.multimodal.evidence import (
 from src.multimodal.experts import build_vision_expert
 from src.multimodal.injection import EvidenceProjector, SemanticEvidenceDomainExpert
 from src.multimodal.tasks.prompts import class_names_for_dataset
+from src.multimodal.utils.backbone import resolve_backbone
 from src.multimodal.utils.logging_utils import MetricLogger
 from src.multimodal.utils.repro import save_run_config, save_versions, set_seed
 from transformers import AutoTokenizer as EncoderTokenizer
@@ -36,9 +38,12 @@ class TrainPlan1Args:
     model_name: str = "mistralai/Mistral-7B-Instruct-v0.3"
     run_dir: str = "runs/plan1_default"
     dataset_name: str = "dtd"
+    hospital_train_file: Optional[str] = None
+    hospital_eval_file: Optional[str] = None
     data_root: str = "./data"
     task_family: str = "single_image"
-    evidence_source: str = "vision"  # vision|text|diffusion_future
+    evidence_source: str = "text"  # vision|text|diffusion_future
+    description_file: Optional[str] = None
     qa_type: str = "label"  # label|yesno|index
     population_output_mode: str = "integer"  # integer|letter
     population_group_size: int = 16
@@ -59,11 +64,21 @@ class TrainPlan1Args:
     max_eval_samples: Optional[int] = 512
     eval_every_steps: int = 100
     answer_only_loss: bool = True
+    use_adapters: bool = True
+    adapter_bottleneck: Optional[int] = 64
+    adapter_dropout: float = 0.0
+    adapter_activation: str = "gelu"
+    tune_layernorm: bool = False
+    inject_location: str = "post_attn"
     seed: int = 42
     device: str = "cuda"
 
 
 def _build_model_and_tokenizer(args: TrainPlan1Args):
+    resolved_model_name, reason = resolve_backbone(args.model_name, args.mistral_models_path)
+    if resolved_model_name != args.model_name:
+        print(f"[plan1] backbone: {args.model_name} -> {resolved_model_name} ({reason})")
+    args.model_name = resolved_model_name
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name,
         cache_dir=args.mistral_models_path,
@@ -82,6 +97,14 @@ def _build_model_and_tokenizer(args: TrainPlan1Args):
     model.generation_config.pad_token_id = tokenizer.pad_token_id
     for p in model.parameters():
         p.requires_grad = False
+    model.configure_injection_(layer_id=args.layer_to_add, inject_location=args.inject_location)
+    model.configure_adapters_(
+        use_adapters=args.use_adapters,
+        adapter_bottleneck=args.adapter_bottleneck,
+        adapter_dropout=args.adapter_dropout,
+        adapter_activation=args.adapter_activation,
+    )
+    model.set_layernorm_tuning_(requires_grad=args.tune_layernorm and args.use_adapters)
     return model, tokenizer
 
 
@@ -92,6 +115,11 @@ def _num_classes_for_dataset(dataset_name: str) -> int:
         return 100
     if dataset_name == "dtd":
         return 47
+    if dataset_name == "oxford_pet":
+        return 37
+    if dataset_name == "hospital_text":
+        # only used by vision/population paths; text path infers classes from file dataset
+        return 2
     raise ValueError(dataset_name)
 
 
@@ -147,10 +175,33 @@ def _attach_semantic_expert(args: TrainPlan1Args, model, tokenizer):
     )
     semantic_expert = SemanticEvidenceDomainExpert(evidence_builder=evidence_builder, projector=projector)
     model.model.layers[args.layer_to_add].add_expert_(semantic_expert, map_to_expert_emb=None)
+    model.configure_injection_(layer_id=args.layer_to_add, inject_location=args.inject_location)
     return model, semantic_expert, vision_expert
 
 
 def _build_dataloaders(args: TrainPlan1Args, tokenizer):
+    if args.dataset_name == "hospital_text":
+        if not args.hospital_train_file or not args.hospital_eval_file:
+            raise ValueError("hospital_text requires --hospital_train_file and --hospital_eval_file")
+        train_ds = HospitalTextQADataset(
+            file_path=args.hospital_train_file,
+            tokenizer=tokenizer,
+            qa_type=args.qa_type,
+            seed=args.seed,
+            max_samples=args.max_train_samples,
+        )
+        eval_ds = HospitalTextQADataset(
+            file_path=args.hospital_eval_file,
+            tokenizer=tokenizer,
+            qa_type=args.qa_type,
+            seed=args.seed,
+            max_samples=args.max_eval_samples,
+        )
+        return (
+            DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_hospital_text),
+            DataLoader(eval_ds, batch_size=args.batch_size, shuffle=False, collate_fn=collate_hospital_text),
+        )
+
     if args.task_family == "single_image":
         train_ds = CIFARSingleImageQADataset(
             root=args.data_root,
@@ -161,6 +212,7 @@ def _build_dataloaders(args: TrainPlan1Args, tokenizer):
             qa_type=args.qa_type,
             seed=args.seed,
             max_samples=args.max_train_samples,
+            description_file=args.description_file,
         )
         eval_ds = CIFARSingleImageQADataset(
             root=args.data_root,
@@ -171,6 +223,7 @@ def _build_dataloaders(args: TrainPlan1Args, tokenizer):
             qa_type=args.qa_type,
             seed=args.seed,
             max_samples=args.max_eval_samples,
+            description_file=args.description_file,
         )
         return (
             DataLoader(train_ds, batch_size=args.batch_size, shuffle=True, collate_fn=collate_single_image),
@@ -372,6 +425,15 @@ def train_plan1(args: TrainPlan1Args):
                         {
                             "evidence_builder": semantic_expert.evidence_builder.state_dict(),
                             "projector": semantic_expert.projector.state_dict(),
+                            "adapters": model.adapter_state_dict(),
+                            "layernorm": {
+                                str(i): {
+                                    "input_layernorm": layer.input_layernorm.state_dict(),
+                                    "post_attention_layernorm": layer.post_attention_layernorm.state_dict(),
+                                }
+                                for i, layer in enumerate(model.model.layers)
+                                if hasattr(layer, "input_layernorm") and hasattr(layer, "post_attention_layernorm")
+                            },
                             "args": asdict(args),
                         },
                         os.path.join(args.run_dir, "best_connectors.pt"),
@@ -383,6 +445,15 @@ def train_plan1(args: TrainPlan1Args):
         {
             "evidence_builder": semantic_expert.evidence_builder.state_dict(),
             "projector": semantic_expert.projector.state_dict(),
+            "adapters": model.adapter_state_dict(),
+            "layernorm": {
+                str(i): {
+                    "input_layernorm": layer.input_layernorm.state_dict(),
+                    "post_attention_layernorm": layer.post_attention_layernorm.state_dict(),
+                }
+                for i, layer in enumerate(model.model.layers)
+                if hasattr(layer, "input_layernorm") and hasattr(layer, "post_attention_layernorm")
+            },
             "args": asdict(args),
         },
         os.path.join(args.run_dir, "last_connectors.pt"),
