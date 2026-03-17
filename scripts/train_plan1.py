@@ -10,7 +10,7 @@ from src.multimodal.trainers.plan1_trainer import TrainPlan1Args, train_plan1
 def parse_args():
     p = argparse.ArgumentParser(description="Plan 1: train semantic evidence injection connectors")
     p.add_argument("--mistral_models_path", type=str, default="model/llm")
-    p.add_argument("--model_name", type=str, default="mistralai/Mistral-7B-Instruct-v0.3")
+    p.add_argument("--model_name", type=str, default="Qwen/Qwen3.5-9B")
     p.add_argument("--run_dir", type=str, required=True)
     p.add_argument("--dataset_name", type=str, default="dtd", choices=["cifar10", "cifar100", "dtd", "oxford_pet", "hospital_text"])
     p.add_argument("--data_root", type=str, default="./data")
@@ -46,6 +46,12 @@ def parse_args():
     p.add_argument("--adapter_activation", type=str, default="gelu", choices=["gelu", "relu"])
     p.add_argument("--tune_layernorm", type=int, default=0, choices=[0, 1])
     p.add_argument("--inject_location", type=str, default="post_attn", choices=["layer_input", "post_attn", "pre_ffn", "post_ffn"])
+    p.add_argument("--load_in_4bit", type=int, default=0, choices=[0, 1])
+    p.add_argument("--bnb_4bit_compute_dtype", type=str, default="bfloat16", choices=["bfloat16", "float16", "float32"])
+    p.add_argument("--bnb_4bit_quant_type", type=str, default="nf4", choices=["nf4", "fp4"])
+    p.add_argument("--bnb_4bit_use_double_quant", type=int, default=1, choices=[0, 1])
+    p.add_argument("--bnb_4bit_cpu_offload", type=int, default=0, choices=[0, 1])
+    p.add_argument("--device_map", type=str, default=None)
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--device", type=str, default="cuda")
     return p.parse_args()
@@ -90,6 +96,12 @@ if __name__ == "__main__":
         adapter_activation=a.adapter_activation,
         tune_layernorm=bool(a.tune_layernorm),
         inject_location=a.inject_location,
+        load_in_4bit=bool(a.load_in_4bit),
+        bnb_4bit_compute_dtype=a.bnb_4bit_compute_dtype,
+        bnb_4bit_quant_type=a.bnb_4bit_quant_type,
+        bnb_4bit_use_double_quant=bool(a.bnb_4bit_use_double_quant),
+        bnb_4bit_cpu_offload=bool(a.bnb_4bit_cpu_offload),
+        device_map=a.device_map,
         seed=a.seed,
         device=a.device,
     )

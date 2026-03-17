@@ -13,7 +13,7 @@ import torch
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
-from src.model.DomainMistralModel import DomainMistralForCausalLM
+from src.model.DomainQwenModel import DomainQwenForCausalLM
 from src.multimodal.data.cifar_qa import (
     CIFARPopulationDataset,
     CIFARSingleImageQADataset,
@@ -22,7 +22,7 @@ from src.multimodal.data.cifar_qa import (
 )
 from src.multimodal.eval.plan1_eval import EvalPlan1Args, evaluate_plan1
 from src.multimodal.experts import build_vision_expert
-from src.multimodal.tasks.parsing import parse_yes_no_answer, population_bin_to_fraction_midpoint, population_fraction_to_bin
+from src.multimodal.tasks.parsing import population_bin_to_fraction_midpoint, population_fraction_to_bin
 from src.multimodal.task_matrix.metrics import macro_f1_from_ints, mean_absolute_error
 from src.multimodal.utils.repro import set_seed
 
@@ -37,7 +37,7 @@ class FrozenVLMConfig:
 @dataclass
 class BaselineSuiteConfig:
     mistral_models_path: str = "model/llm"
-    model_name: str = "mistralai/Mistral-7B-Instruct-v0.3"
+    model_name: str = "Qwen/Qwen3.5-9B"
     dataset_name: str = "dtd"
     data_root: str = "./data"
     task_family: str = "single_image"  # single_image|population
@@ -128,6 +128,12 @@ def _allowed_token_ids(task_family: str, qa_mode: str, tokenizer, dataset) -> Li
     return sorted(ids)
 
 
+def _yes_no_token_sets(tokenizer):
+    yes_ids = set(_single_token_ids(tokenizer, "Yes"))
+    no_ids = set(_single_token_ids(tokenizer, "No"))
+    return yes_ids, no_ids
+
+
 def _build_eval_loader(cfg: BaselineSuiteConfig, tokenizer):
     if cfg.task_family == "single_image":
         ds = CIFARSingleImageQADataset(
@@ -158,7 +164,7 @@ def _build_llm(cfg: BaselineSuiteConfig, dev: torch.device):
     tok = AutoTokenizer.from_pretrained(cfg.model_name, cache_dir=cfg.mistral_models_path, use_fast=False)
     if tok.pad_token is None:
         tok.pad_token = tok.unk_token
-    model = DomainMistralForCausalLM.from_pretrained_mistral(
+    model = DomainQwenForCausalLM.from_pretrained_qwen(
         cfg.model_name,
         cache_dir=cfg.mistral_models_path,
         torch_dtype=torch.bfloat16 if dev.type == "cuda" else torch.float32,
@@ -231,6 +237,7 @@ def _evaluate_llm_only(cfg: BaselineSuiteConfig, model, tokenizer, loader, dev):
     ds = loader.dataset
     qa_mode = getattr(ds, "effective_qa_type", cfg.qa_type)
     allowed = _allowed_token_ids(cfg.task_family, qa_mode, tokenizer, ds)
+    yes_ids, no_ids = _yes_no_token_sets(tokenizer) if qa_mode in {"yesno", "yesno_set2"} else (set(), set())
     t0 = time.time()
     correct = total = 0
     all_true = []
@@ -242,18 +249,16 @@ def _evaluate_llm_only(cfg: BaselineSuiteConfig, model, tokenizer, loader, dev):
             tok = batch["prompt_tokens"].to(dev)
             m = batch["prompt_mask"].to(dev)
             pred = _predict_llm_next_token(model, tok, m, allowed).cpu().tolist()
-            # For yes/no tasks, score by semantic parsing instead of raw token-id equality.
-            # This avoids false zeros when tokenizer-specific single-token ids differ.
             if cfg.task_family == "single_image" and qa_mode in {"yesno", "yesno_set2"}:
                 gt_yesno = [1 if str(a).lower().startswith("yes") else 0 for a in batch["answer_text"]]
                 pred_yesno = []
                 for p in pred:
-                    txt = tokenizer.decode([int(p)], skip_special_tokens=True)
-                    parsed = parse_yes_no_answer(txt)
-                    if parsed is None:
-                        # Fallback: keep deterministic behavior if decoding is empty/ambiguous.
-                        parsed = 0
-                    pred_yesno.append(int(parsed))
+                    if int(p) in yes_ids:
+                        pred_yesno.append(1)
+                    elif int(p) in no_ids:
+                        pred_yesno.append(0)
+                    else:
+                        pred_yesno.append(-1)
                 correct += sum(int(a == b) for a, b in zip(pred_yesno, gt_yesno))
                 total += len(gt_yesno)
                 all_true.extend(gt_yesno)

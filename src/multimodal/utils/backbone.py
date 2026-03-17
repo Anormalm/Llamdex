@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import importlib.util
 from typing import List, Tuple
 
 import torch
@@ -41,17 +42,35 @@ def resolve_backbone(model_name: str, cache_dir: str) -> Tuple[str, str]:
 
     Returns: (resolved_model_name, reason)
     """
+    def _qwen_runtime_supported() -> bool:
+        # Current DomainMistral wrapper depends on HF model internals.
+        # Gate Qwen selection on local transformers support to avoid hard runtime failures.
+        return importlib.util.find_spec("transformers.models.qwen2") is not None or importlib.util.find_spec(
+            "transformers.models.qwen3"
+        ) is not None
+
+    def _safe_user_selected(name: str) -> Tuple[str, str]:
+        if "qwen" not in name.lower():
+            return name, "user-specified"
+        if _qwen_runtime_supported():
+            return name, "user-specified (qwen-supported)"
+        return (
+            "HuggingFaceTB/SmolLM2-360M-Instruct",
+            "qwen requested but local transformers lacks qwen2/qwen3 support; fell back to non-mistral lightweight model",
+        )
+
     if model_name != "auto":
-        return model_name, "user-specified"
+        return _safe_user_selected(model_name)
 
     mem = _gpu_mem_gb()
     # Ordered from stronger to lighter, with conservative VRAM guards.
     candidates: List[Tuple[str, float]] = [
-        ("mistralai/Mistral-7B-Instruct-v0.3", 13.0),
+        ("Qwen/Qwen3.5-9B", 16.0),
         ("HuggingFaceTB/SmolLM2-360M-Instruct", 2.0),
-        ("hf-internal-testing/tiny-random-MistralForCausalLM", 0.0),
     ]
     for mid, min_mem in candidates:
+        if "qwen" in mid.lower() and not _qwen_runtime_supported():
+            continue
         if mem >= min_mem and _exists_in_hf_cache(cache_dir, mid):
             return mid, f"auto-selected (gpu_mem={mem:.1f}GB, cache-hit)"
     # Final fallback: non-random small model if cache miss handled by HF.

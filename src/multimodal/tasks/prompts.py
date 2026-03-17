@@ -31,7 +31,11 @@ def build_label_prompt(question_style: str = "label", class_names: List[str] | N
 
 
 def build_yes_no_prompt(class_name: str) -> str:
-    return f"Is this a {class_name}? Answer Yes or No only."
+    return (
+        f"Is this a {class_name}? "
+        "Respond with exactly one token: Yes or No. "
+        "Do not output punctuation or any other words."
+    )
 
 
 def build_population_prompt(target_class: str, output_mode: str = "integer") -> str:

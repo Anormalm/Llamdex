@@ -70,7 +70,7 @@ def _tfidf_logreg_accuracy(train_x: List[str], train_y: List[str], eval_x: List[
 def parse_args():
     p = argparse.ArgumentParser(description="Text-only baseline suite for hospital-style privacy setting.")
     p.add_argument("--mistral_models_path", type=str, default="model/llm")
-    p.add_argument("--model_name", type=str, default="mistralai/Mistral-7B-Instruct-v0.3")
+    p.add_argument("--model_name", type=str, default="Qwen/Qwen3.5-9B")
     p.add_argument("--train_file", type=str, required=True, help="Hospital train file (csv/jsonl).")
     p.add_argument("--eval_file", type=str, required=True, help="Hospital eval file (csv/jsonl).")
     p.add_argument("--run_dir", type=str, default="runs/plan1_hospital_text")

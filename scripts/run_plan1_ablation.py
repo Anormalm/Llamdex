@@ -6,13 +6,14 @@ import subprocess
 import sys
 from pathlib import Path
 from transformers import AutoConfig
+from src.multimodal.utils.backbone import resolve_backbone
 
 
 def parse_args():
     p = argparse.ArgumentParser(description="Run Plan 1 ablations for num_tokens and injection layer")
     p.add_argument("--output_csv", type=str, default="runs/plan1_ablation_summary.csv")
     p.add_argument("--mistral_models_path", type=str, default="model/llm")
-    p.add_argument("--model_name", type=str, default="mistralai/Mistral-7B-Instruct-v0.3")
+    p.add_argument("--model_name", type=str, default="Qwen/Qwen3.5-9B")
     p.add_argument("--tokens_grid", type=int, nargs="+", default=[1, 4, 8, 16])
     p.add_argument("--layers", type=int, nargs="+", default=[0, 8, 16, 24])
     p.add_argument("--base_run_dir", type=str, default="runs/plan1_ablation")
@@ -29,6 +30,11 @@ def parse_args():
 def main():
     args = parse_args()
     Path(os.path.dirname(args.output_csv) or ".").mkdir(parents=True, exist_ok=True)
+
+    resolved_model_name, reason = resolve_backbone(args.model_name, args.mistral_models_path)
+    if resolved_model_name != args.model_name:
+        print(f"[ablation] backbone: {args.model_name} -> {resolved_model_name} ({reason})", flush=True)
+    args.model_name = resolved_model_name
 
     cfg = AutoConfig.from_pretrained(args.model_name, cache_dir=args.mistral_models_path)
     max_layers = int(getattr(cfg, "num_hidden_layers", 0))

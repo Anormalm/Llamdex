@@ -12,7 +12,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
-from src.model.DomainMistralModel import DomainMistralForCausalLM
+from src.model.DomainQwenModel import DomainQwenForCausalLM
 from src.multimodal.data.cifar_qa import (
     CIFARPopulationDataset,
     CIFARSingleImageQADataset,
@@ -32,7 +32,7 @@ from src.multimodal.utils.repro import set_seed
 @dataclass
 class AblationConfig:
     mistral_models_path: str = "model/llm"
-    model_name: str = "mistralai/Mistral-7B-Instruct-v0.3"
+    model_name: str = "Qwen/Qwen3.5-9B"
     dataset: str = "dtd"
     data_root: str = "./data"
     task: str = "single"  # single|population
@@ -73,7 +73,7 @@ def _build_model_tokenizer(cfg: AblationConfig):
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.unk_token
-    model = DomainMistralForCausalLM.from_pretrained_mistral(
+    model = DomainQwenForCausalLM.from_pretrained_qwen(
         cfg.model_name,
         cache_dir=cfg.mistral_models_path,
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,

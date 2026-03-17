@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 import torch
 from transformers import AutoTokenizer
 
-from src.model.DomainMistralModel import DomainMistralForCausalLM
+from src.model.DomainQwenModel import DomainQwenForCausalLM
 from src.multimodal.framework.builders import EncoderEvidenceBuilder
 from src.multimodal.framework.expert_encoders import ExpertEncoderSpec, TabularExpertEncoder, build_expert_encoder
 from src.multimodal.framework.runner import AblationConfig, run_single_experiment
@@ -83,7 +83,7 @@ def _ensure_default_backbones(cfg: BackboneScalingConfig) -> None:
     if cfg.backbones:
         return
     cfg.backbones = [
-        BackboneSpec(name="mistral-7b", model_name="mistralai/Mistral-7B-Instruct-v0.3"),
+        BackboneSpec(name="qwen3.5-9b", model_name="Qwen/Qwen3.5-9B"),
         BackboneSpec(name="llama3-8b", model_name="meta-llama/Meta-Llama-3-8B-Instruct"),
         BackboneSpec(name="qwen2.5-7b", model_name="Qwen/Qwen2.5-7B-Instruct"),
         BackboneSpec(name="qwen2.5-14b", model_name="Qwen/Qwen2.5-14B-Instruct"),
@@ -117,7 +117,7 @@ def _build_base_model(backbone: BackboneSpec, device: torch.device):
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.unk_token
-    model = DomainMistralForCausalLM.from_pretrained_mistral(
+    model = DomainQwenForCausalLM.from_pretrained_qwen(
         backbone.model_name,
         cache_dir=backbone.mistral_models_path,
         torch_dtype=torch.bfloat16 if device.type == "cuda" else torch.float32,

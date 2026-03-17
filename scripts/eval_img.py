@@ -25,7 +25,7 @@ import numpy as np
 from sklearn.metrics import accuracy_score
 import random
 
-from src.model.DomainMistralModel import DomainMistralForCausalLM
+from src.model.DomainQwenModel import DomainQwenForCausalLM
 from src.vision.vision_domain_expert import VisionDomainExpert
 from src.vision.cifar_dataset import CIFAR10Dataset, get_cifar10_collate_fn
 
@@ -41,7 +41,7 @@ def set_seed(seed: int = 42):
 
 def evaluate_img(
     mistral_models_path: str,
-    model_name: str = "mistralai/Mistral-7B-Instruct-v0.3",
+    model_name: str = "Qwen/Qwen3.5-9B",
     model_state_dict: str = None,
     num_tokens: int = 10,
     layer_to_add: int = 0,
@@ -94,7 +94,7 @@ def evaluate_img(
         torch_dtype=torch.bfloat16
     )
     
-    model = DomainMistralForCausalLM.from_pretrained_mistral(
+    model = DomainQwenForCausalLM.from_pretrained_qwen(
         model_name,
         cache_dir=mistral_models_path,
         torch_dtype=torch.bfloat16,
@@ -301,9 +301,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Evaluate Llamdex-IMG on CIFAR-10")
     
     parser.add_argument("--mistral_models_path", type=str, default="model/llm",
-                       help="Path to Mistral model cache")
-    parser.add_argument("--model_name", type=str, default="mistralai/Mistral-7B-Instruct-v0.3",
-                       help="Mistral model name")
+                       help="Path to backbone model cache")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen3.5-9B",
+                       help="Backbone model name")
     parser.add_argument("--model_state_dict", type=str, default=None,
                        help="Path to model state dict (for Llamdex-IMG)")
     parser.add_argument("--num_tokens", type=int, default=10,

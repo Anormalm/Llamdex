@@ -9,7 +9,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
-from src.model.DomainMistralModel import DomainMistralForCausalLM
+from src.model.DomainQwenModel import DomainQwenForCausalLM
 from src.multimodal.data.cifar_qa import (
     CIFARPopulationDataset,
     CIFARSingleImageQADataset,
@@ -35,7 +35,7 @@ from transformers import AutoTokenizer as EncoderTokenizer
 @dataclass
 class TrainPlan1Args:
     mistral_models_path: str = "model/llm"
-    model_name: str = "mistralai/Mistral-7B-Instruct-v0.3"
+    model_name: str = "Qwen/Qwen3.5-9B"
     run_dir: str = "runs/plan1_default"
     dataset_name: str = "dtd"
     hospital_train_file: Optional[str] = None
@@ -70,6 +70,12 @@ class TrainPlan1Args:
     adapter_activation: str = "gelu"
     tune_layernorm: bool = False
     inject_location: str = "post_attn"
+    load_in_4bit: bool = False
+    bnb_4bit_compute_dtype: str = "bfloat16"
+    bnb_4bit_quant_type: str = "nf4"
+    bnb_4bit_use_double_quant: bool = True
+    bnb_4bit_cpu_offload: bool = False
+    device_map: Optional[str] = None
     seed: int = 42
     device: str = "cuda"
 
@@ -87,10 +93,16 @@ def _build_model_and_tokenizer(args: TrainPlan1Args):
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.unk_token
-    model = DomainMistralForCausalLM.from_pretrained_mistral(
+    model = DomainQwenForCausalLM.from_pretrained_qwen(
         args.model_name,
         cache_dir=args.mistral_models_path,
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        load_in_4bit=args.load_in_4bit,
+        bnb_4bit_compute_dtype=args.bnb_4bit_compute_dtype,
+        bnb_4bit_quant_type=args.bnb_4bit_quant_type,
+        bnb_4bit_use_double_quant=args.bnb_4bit_use_double_quant,
+        bnb_4bit_cpu_offload=args.bnb_4bit_cpu_offload,
+        device_map=args.device_map,
         tokenizer=tokenizer,
     )
     model.num_tokens = args.num_tokens
@@ -374,7 +386,8 @@ def train_plan1(args: TrainPlan1Args):
         text_tokenizer = EncoderTokenizer.from_pretrained(args.text_encoder_model_id, cache_dir=args.mistral_models_path)
 
     device = torch.device(args.device if torch.cuda.is_available() and args.device.startswith("cuda") else "cpu")
-    model = model.to(device).to(torch.bfloat16 if device.type == "cuda" else torch.float32)
+    if not model.is_quantized_4bit:
+        model = model.to(device).to(torch.bfloat16 if device.type == "cuda" else torch.float32)
     if vision_expert is not None:
         vision_expert = vision_expert.to(device)
 

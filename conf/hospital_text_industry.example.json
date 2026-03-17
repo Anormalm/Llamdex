@@ -1,6 +1,6 @@
 {
   "mistral_models_path": "model/llm",
-  "model_name": "mistralai/Mistral-7B-Instruct-v0.3",
+  "model_name": "Qwen/Qwen3.5-9B",
   "train_file": "runs/hospital_train.csv",
   "eval_file": "runs/hospital_eval.csv",
   "run_dir": "runs/plan1_hospital_text_industry",
@@ -19,4 +19,3 @@
   "out_csv": "runs/hospital_text_baseline_suite_industry.csv",
   "out_json": "runs/hospital_text_baseline_suite_industry.json"
 }
-

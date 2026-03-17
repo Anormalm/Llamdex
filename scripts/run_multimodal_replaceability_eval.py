@@ -14,7 +14,7 @@ def _ints(values):
 def parse_args():
     p = argparse.ArgumentParser(description="Research-grade multimodal replaceability evaluation for prefix injection.")
     p.add_argument("--mistral_models_path", type=str, default="model/llm")
-    p.add_argument("--model_name", type=str, default="mistralai/Mistral-7B-Instruct-v0.3")
+    p.add_argument("--model_name", type=str, default="Qwen/Qwen3.5-9B")
     p.add_argument("--dataset", type=str, default="dtd", choices=["cifar10", "cifar100", "dtd"])
     p.add_argument("--data_root", type=str, default="./data")
     p.add_argument("--task", type=str, default="single", choices=["single", "population"])

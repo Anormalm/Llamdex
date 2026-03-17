@@ -11,7 +11,7 @@ import torch.nn as nn
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
-from src.model.DomainMistralModel import DomainMistralForCausalLM
+from src.model.DomainQwenModel import DomainQwenForCausalLM
 from src.multimodal.framework.builders import EncoderEvidenceBuilder
 from src.multimodal.framework.expert_encoders import ExpertEncoderSpec, build_expert_encoder
 from src.multimodal.injection import EvidenceProjector, SemanticEvidenceDomainExpert
@@ -52,7 +52,7 @@ class TaskSpec:
 @dataclass
 class TaskMatrixConfig:
     mistral_models_path: str = "model/llm"
-    model_name: str = "mistralai/Mistral-7B-Instruct-v0.3"
+    model_name: str = "Qwen/Qwen3.5-9B"
     data_root: str = "./data"
     seed: int = 42
     device: str = "cuda"
@@ -84,7 +84,7 @@ def _build_model_tokenizer(cfg: TaskMatrixConfig):
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.unk_token
-    model = DomainMistralForCausalLM.from_pretrained_mistral(
+    model = DomainQwenForCausalLM.from_pretrained_qwen(
         cfg.model_name,
         cache_dir=cfg.mistral_models_path,
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,

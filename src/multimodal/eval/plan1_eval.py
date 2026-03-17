@@ -9,7 +9,7 @@ from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 from transformers import AutoTokenizer as EncoderTokenizer
 
-from src.model.DomainMistralModel import DomainMistralForCausalLM
+from src.model.DomainQwenModel import DomainQwenForCausalLM
 from src.multimodal.data.cifar_qa import (
     CIFARPopulationDataset,
     CIFARSingleImageQADataset,
@@ -23,7 +23,6 @@ from src.multimodal.injection import EvidenceProjector, SemanticEvidenceDomainEx
 from src.multimodal.tasks.parsing import (
     parse_label_answer,
     parse_population_answer,
-    parse_yes_no_answer,
     population_fraction_to_bin,
     population_bin_to_fraction_midpoint,
 )
@@ -31,10 +30,31 @@ from src.multimodal.tasks.prompts import class_names_for_dataset
 from src.multimodal.utils.backbone import resolve_backbone
 
 
+def _chat_template_to_ids(tokenizer, messages) -> torch.Tensor:
+    try:
+        out = tokenizer.apply_chat_template(messages, return_tensors="pt")
+    except Exception:
+        plain = "\n".join([f"{m.get('role', 'user')}: {m.get('content', '')}" for m in messages])
+        out = tokenizer(plain, return_tensors="pt", add_special_tokens=True)["input_ids"]
+    if isinstance(out, torch.Tensor):
+        return out.squeeze(0).long()
+    if hasattr(out, "input_ids"):
+        ids = out.input_ids
+    elif isinstance(out, dict) and "input_ids" in out:
+        ids = out["input_ids"]
+    else:
+        raise TypeError("Unsupported apply_chat_template return type for tokenizer.")
+    if isinstance(ids, list):
+        ids = torch.tensor(ids, dtype=torch.long)
+    if isinstance(ids, torch.Tensor) and ids.dim() == 2:
+        return ids.squeeze(0).long()
+    return ids.long()
+
+
 @dataclass
 class EvalPlan1Args:
     mistral_models_path: str = "model/llm"
-    model_name: str = "mistralai/Mistral-7B-Instruct-v0.3"
+    model_name: str = "Qwen/Qwen3.5-9B"
     connectors_path: Optional[str] = None
     dataset_name: str = "dtd"
     hospital_eval_file: Optional[str] = None
@@ -67,6 +87,12 @@ class EvalPlan1Args:
     tune_layernorm: bool = False
     inject_location: str = "post_attn"
     enforce_checkpoint_compat: bool = False
+    load_in_4bit: bool = False
+    bnb_4bit_compute_dtype: str = "bfloat16"
+    bnb_4bit_quant_type: str = "nf4"
+    bnb_4bit_use_double_quant: bool = True
+    bnb_4bit_cpu_offload: bool = False
+    device_map: Optional[str] = None
 
 
 def _num_classes_for_dataset(dataset_name: str) -> int:
@@ -126,6 +152,12 @@ def _allowed_answer_token_ids(args: EvalPlan1Args, tokenizer, class_names):
     return sorted(ids)
 
 
+def _yes_no_token_sets(tokenizer):
+    yes_ids = set(_single_token_ids(tokenizer, "Yes"))
+    no_ids = set(_single_token_ids(tokenizer, "No"))
+    return yes_ids, no_ids
+
+
 def _build_model(args: EvalPlan1Args):
     resolved_model_name, reason = resolve_backbone(args.model_name, args.mistral_models_path)
     if resolved_model_name != args.model_name:
@@ -139,10 +171,16 @@ def _build_model(args: EvalPlan1Args):
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.unk_token
-    model = DomainMistralForCausalLM.from_pretrained_mistral(
+    model = DomainQwenForCausalLM.from_pretrained_qwen(
         args.model_name,
         cache_dir=args.mistral_models_path,
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+        load_in_4bit=args.load_in_4bit,
+        bnb_4bit_compute_dtype=args.bnb_4bit_compute_dtype,
+        bnb_4bit_quant_type=args.bnb_4bit_quant_type,
+        bnb_4bit_use_double_quant=args.bnb_4bit_use_double_quant,
+        bnb_4bit_cpu_offload=args.bnb_4bit_cpu_offload,
+        device_map=args.device_map,
         tokenizer=tokenizer,
     )
     model.num_tokens = args.num_tokens
@@ -328,9 +366,11 @@ def evaluate_plan1(args: EvalPlan1Args) -> Dict[str, float]:
     class_names = getattr(eval_ds, "class_names", class_names_for_dataset(args.dataset_name))
     qa_mode = getattr(eval_ds, "effective_qa_type", args.qa_type)
     allowed_token_ids = _allowed_answer_token_ids(args, tokenizer, class_names)
+    yes_token_ids, no_token_ids = _yes_no_token_sets(tokenizer) if qa_mode in {"yesno", "yesno_set2"} else (set(), set())
     if qa_mode == "label_code" and getattr(eval_ds, "code_to_token_id", None) is not None:
         allowed_token_ids = sorted(int(t) for t in eval_ds.code_to_token_id.values())
-    model = model.to(device).to(torch.bfloat16 if device.type == "cuda" else torch.float32)
+    if not model.is_quantized_4bit:
+        model = model.to(device).to(torch.bfloat16 if device.type == "cuda" else torch.float32)
     if vision_expert is not None:
         vision_expert = vision_expert.to(device)
     model.eval()
@@ -411,7 +451,7 @@ def evaluate_plan1(args: EvalPlan1Args) -> Dict[str, float]:
 
                     question = batch["question_text"][i] if args.task_family == "single_image" else "Use the expert summary."
                     messages = [{"role": "system", "content": "Follow output format strictly."}, {"role": "user", "content": f"{question}\n{hint}"}]
-                    t = tokenizer.apply_chat_template(messages, return_tensors="pt").squeeze(0)
+                    t = _chat_template_to_ids(tokenizer, messages)
                     prompt_tokens.append(t)
 
                 max_len = max(x.size(0) for x in prompt_tokens)
@@ -436,8 +476,18 @@ def evaluate_plan1(args: EvalPlan1Args) -> Dict[str, float]:
 
             if args.task_family == "single_image":
                 if qa_mode in {"yesno", "yesno_set2"}:
-                    parsed_pred = [parse_yes_no_answer(x) for x in pred_texts]
                     gt = [1 if a.lower().startswith("yes") else 0 for a in batch["answer_text"]]
+                    for p, g in zip(pred_ids, gt):
+                        if int(p) in yes_token_ids:
+                            pred_bin = 1
+                        elif int(p) in no_token_ids:
+                            pred_bin = 0
+                        else:
+                            pred_bin = -1
+                        if pred_bin == int(g):
+                            correct += 1
+                        total += 1
+                    continue
                 elif qa_mode == "label_code":
                     gt_ids = batch["target_token_id"].cpu().tolist()
                     for p, g in zip(pred_ids, gt_ids):

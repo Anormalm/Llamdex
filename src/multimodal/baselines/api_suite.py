@@ -23,7 +23,7 @@ from src.multimodal.data.cifar_qa import (
     collate_population,
     collate_single_image,
 )
-from src.multimodal.tasks.parsing import parse_yes_no_answer, population_fraction_to_bin
+from src.multimodal.tasks.parsing import population_fraction_to_bin
 from src.multimodal.task_matrix.metrics import macro_f1_from_ints, mean_absolute_error
 from src.multimodal.utils.repro import set_seed
 
@@ -209,67 +209,6 @@ def _decode_constrained_token(text: str, tokenizer, allowed_ids: List[int]) -> i
     return int(allowed_ids[0]) if allowed_ids else (int(toks[0]) if toks else 0)
 
 
-def _norm_text(s: str) -> str:
-    return re.sub(r"[^a-z0-9]+", " ", s.lower()).strip()
-
-
-def _extract_code_from_text(text: str, class_codes: List[str]) -> Optional[str]:
-    if not class_codes:
-        return None
-    tokens = set(re.findall(r"[A-Za-z0-9!@#$%^&*()\[\]{}<>?/|]", text))
-    for c in class_codes:
-        if c in tokens:
-            return c
-    for c in class_codes:
-        if c.lower() in text.lower():
-            return c
-    return None
-
-
-def _extract_class_index_from_text(text: str, class_names: List[str]) -> Optional[int]:
-    if not class_names:
-        return None
-    norm = _norm_text(text)
-    if not norm:
-        return None
-    for i, name in enumerate(class_names):
-        n = _norm_text(name)
-        if n and n in norm:
-            return i
-    return None
-
-
-def _semantic_pred_token_id(
-    text: str,
-    ds,
-    tokenizer,
-    allowed_ids: List[int],
-    qa_mode: str,
-) -> Optional[int]:
-    if qa_mode == "label_code" and getattr(ds, "class_codes", None) is not None and getattr(ds, "code_to_token_id", None) is not None:
-        code = _extract_code_from_text(text, list(ds.class_codes))
-        if code is not None and code in ds.code_to_token_id:
-            return int(ds.code_to_token_id[code])
-        class_idx = _extract_class_index_from_text(text, list(ds.class_names))
-        if class_idx is not None and 0 <= class_idx < len(ds.class_codes):
-            return int(ds.code_to_token_id[ds.class_codes[class_idx]])
-        return None
-    if qa_mode in {"yesno", "yesno_set2"}:
-        t = _norm_text(text)
-        if "yes" in t:
-            for tid in allowed_ids:
-                tok = tokenizer.decode([int(tid)]).strip().lower()
-                if tok == "yes":
-                    return int(tid)
-        if "no" in t:
-            for tid in allowed_ids:
-                tok = tokenizer.decode([int(tid)]).strip().lower()
-                if tok == "no":
-                    return int(tid)
-        return None
-    return None
-
-
 def _strict_answer_instruction(task_family: str, qa_mode: str, ds) -> str:
     if task_family == "single_image":
         if qa_mode == "label_code" and getattr(ds, "class_codes", None) is not None and getattr(ds, "class_names", None) is not None:
@@ -349,6 +288,8 @@ def _eval_api_model(
     ds = loader.dataset
     qa_mode = getattr(ds, "effective_qa_type", cfg.qa_type)
     allowed = _allowed_ids(cfg.task_family, qa_mode, tokenizer, ds)
+    yes_ids = set(_single_token_ids(tokenizer, "Yes")) if qa_mode in {"yesno", "yesno_set2"} else set()
+    no_ids = set(_single_token_ids(tokenizer, "No")) if qa_mode in {"yesno", "yesno_set2"} else set()
 
     rag_docs = _build_rag_docs(loader, cfg.rag_db_size) if mode == "rag" else []
     t0 = time.time()
@@ -415,39 +356,34 @@ def _eval_api_model(
                 raise ValueError(mode)
 
             strict_pred_id = _decode_constrained_token(text, tokenizer, allowed)
-            semantic_pred_id = _semantic_pred_token_id(text, ds, tokenizer, allowed, qa_mode)
-            pred_id = semantic_pred_id if semantic_pred_id is not None else strict_pred_id
             gt_id = int(batch["target_token_id"][i].item())
             total += 1
 
             if cfg.task_family == "single_image" and qa_mode in {"yesno", "yesno_set2"}:
-                # Semantic yes/no scoring (robust to tokenizer-id drift across providers).
                 gt_bin = 1 if str(batch["answer_text"][i]).lower().startswith("yes") else 0
-                sem_bin = parse_yes_no_answer(text)
-                if sem_bin is None:
-                    sem_bin = parse_yes_no_answer(tokenizer.decode([pred_id], skip_special_tokens=True))
-                if sem_bin is None:
-                    sem_bin = 0
-                strict_bin = parse_yes_no_answer(tokenizer.decode([strict_pred_id], skip_special_tokens=True))
-                if strict_bin is None:
+                if int(strict_pred_id) in yes_ids:
+                    strict_bin = 1
+                elif int(strict_pred_id) in no_ids:
                     strict_bin = 0
+                else:
+                    strict_bin = -1
                 strict_correct += int(int(strict_bin) == int(gt_bin))
-                semantic_correct += int(int(sem_bin) == int(gt_bin))
+                semantic_correct += int(int(strict_bin) == int(gt_bin))
                 y_true.append(int(gt_bin))
                 y_pred_strict.append(int(strict_bin))
-                y_pred_semantic.append(int(sem_bin))
+                y_pred_semantic.append(int(strict_bin))
             elif cfg.task_family == "single_image":
                 strict_correct += int(strict_pred_id == gt_id)
-                semantic_correct += int(pred_id == gt_id)
+                semantic_correct += int(strict_pred_id == gt_id)
                 lut = {int(t): idx for idx, t in enumerate(allowed)} if allowed else {}
                 y_true.append(lut.get(gt_id, 0))
                 y_pred_strict.append(lut.get(strict_pred_id, 0))
-                y_pred_semantic.append(lut.get(pred_id, 0))
+                y_pred_semantic.append(lut.get(strict_pred_id, 0))
             else:
                 strict_correct += int(strict_pred_id == gt_id)
-                semantic_correct += int(pred_id == gt_id)
+                semantic_correct += int(strict_pred_id == gt_id)
                 try:
-                    pb = int(tokenizer.decode([pred_id]).strip())
+                    pb = int(tokenizer.decode([strict_pred_id]).strip())
                 except Exception:
                     pb = 0
                 pf = min(1.0, max(0.0, pb / 10.0))

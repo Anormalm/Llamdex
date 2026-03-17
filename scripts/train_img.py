@@ -2,7 +2,7 @@
 Training script for Llamdex-IMG (image classification extension).
 
 Usage:
-    python scripts/train_img.py --mistral_models_path model/llm --model_name mistralai/Mistral-7B-Instruct-v0.3
+    python scripts/train_img.py --mistral_models_path model/llm --model_name Qwen/Qwen3.5-9B
 """
 
 import sys
@@ -22,7 +22,7 @@ from torch.utils.tensorboard import SummaryWriter
 import random
 import numpy as np
 
-from src.model.DomainMistralModel import DomainMistralForCausalLM
+from src.model.DomainQwenModel import DomainQwenForCausalLM
 from src.vision.vision_domain_expert import VisionDomainExpert
 from src.vision.cifar_dataset import CIFAR10Dataset, get_cifar10_collate_fn
 
@@ -39,7 +39,7 @@ def set_seed(seed: int = 42):
 
 def train_img(
     mistral_models_path: str,
-    model_name: str = "mistralai/Mistral-7B-Instruct-v0.3",
+    model_name: str = "Qwen/Qwen3.5-9B",
     save_dir: str = "model/llm/llamdex_img_cifar10",
     num_tokens: int = 10,
     layer_to_add: int = 0,
@@ -102,7 +102,7 @@ def train_img(
         torch_dtype=torch.bfloat16
     )
     
-    model = DomainMistralForCausalLM.from_pretrained_mistral(
+    model = DomainQwenForCausalLM.from_pretrained_qwen(
         model_name,
         cache_dir=mistral_models_path,
         torch_dtype=torch.bfloat16,
@@ -395,9 +395,9 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Train Llamdex-IMG on CIFAR-10")
     
     parser.add_argument("--mistral_models_path", type=str, default="model/llm",
-                       help="Path to Mistral model cache")
-    parser.add_argument("--model_name", type=str, default="mistralai/Mistral-7B-Instruct-v0.3",
-                       help="Mistral model name")
+                       help="Path to backbone model cache")
+    parser.add_argument("--model_name", type=str, default="Qwen/Qwen3.5-9B",
+                       help="Backbone model name")
     parser.add_argument("--save_dir", type=str, default="model/llm/llamdex_img_cifar10",
                        help="Directory to save checkpoints")
     parser.add_argument("--num_tokens", type=int, default=10,
