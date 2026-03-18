@@ -168,6 +168,7 @@ def _build_model(args: EvalPlan1Args):
         cache_dir=args.mistral_models_path,
         torch_dtype=torch.bfloat16,
         use_fast=False,
+        trust_remote_code=True,
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.unk_token

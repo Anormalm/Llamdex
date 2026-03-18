@@ -3,11 +3,14 @@ from __future__ import annotations
 import csv
 import json
 import os
+import re
+import traceback
 from dataclasses import asdict, dataclass, field
 from typing import Dict, List, Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from transformers import AutoTokenizer
 
@@ -47,6 +50,11 @@ class TaskSpec:
     vqa_question_field: str = "question"
     vqa_answer_field: str = "answer"
     population_group_size: int = 8
+    gen_max_new_tokens: int = 24
+    gen_temperature: float = 0.7
+    gen_top_p: float = 0.9
+    gen_repetition_penalty: float = 1.1
+    gen_do_sample: bool = False
 
 
 @dataclass
@@ -81,6 +89,7 @@ def _build_model_tokenizer(cfg: TaskMatrixConfig):
         cache_dir=cfg.mistral_models_path,
         torch_dtype=torch.bfloat16,
         use_fast=False,
+        trust_remote_code=True,
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.unk_token
@@ -167,6 +176,43 @@ def _constrained_argmax(logits: torch.Tensor, allowed_token_ids: List[int]) -> t
     return allowed[local]
 
 
+def _top_p_filter(logits: torch.Tensor, top_p: float) -> torch.Tensor:
+    if top_p <= 0.0 or top_p >= 1.0:
+        return logits
+    sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+    probs = F.softmax(sorted_logits, dim=-1)
+    cumulative_probs = torch.cumsum(probs, dim=-1)
+    sorted_mask = cumulative_probs > top_p
+    sorted_mask[..., 1:] = sorted_mask[..., :-1].clone()
+    sorted_mask[..., 0] = 0
+    mask = torch.zeros_like(logits, dtype=torch.bool)
+    mask.scatter_(dim=-1, index=sorted_indices, src=sorted_mask)
+    return logits.masked_fill(mask, float("-inf"))
+
+
+def _sample_next_token(
+    logits: torch.Tensor,
+    generated_ids: List[int],
+    temperature: float,
+    top_p: float,
+    repetition_penalty: float,
+    do_sample: bool,
+) -> torch.Tensor:
+    step_logits = logits.clone()
+    if repetition_penalty > 1.0 and generated_ids:
+        for tid in set(generated_ids):
+            step_logits[..., tid] = step_logits[..., tid] / repetition_penalty
+    if temperature > 0:
+        step_logits = step_logits / temperature
+    step_logits = _top_p_filter(step_logits, top_p=top_p)
+    if do_sample:
+        probs = F.softmax(step_logits, dim=-1)
+        nxt = torch.multinomial(probs, num_samples=1)
+    else:
+        nxt = step_logits.argmax(dim=-1, keepdim=True)
+    return nxt.long()
+
+
 def _expert_input_from_batch(batch: Dict, device: torch.device, expert_type: str):
     if expert_type in {"xgboost", "ft_transformer", "tabpfn", "tabular"}:
         imgs = batch["images"].to(device).float()
@@ -210,14 +256,37 @@ def _train_connector(
                 break
 
 
-def _generate_rationale(model, tokenizer, prompt_tokens: torch.Tensor, prompt_mask: torch.Tensor, expert_input, max_new_tokens=16):
+def _generate_rationale(
+    model,
+    tokenizer,
+    prompt_tokens: torch.Tensor,
+    prompt_mask: torch.Tensor,
+    expert_input,
+    max_new_tokens: int = 24,
+    temperature: float = 0.7,
+    top_p: float = 0.9,
+    repetition_penalty: float = 1.1,
+    do_sample: bool = False,
+):
     seq = prompt_tokens.clone()
     mask = prompt_mask.clone()
+    generated_ids: List[int] = []
+    eos_id = tokenizer.eos_token_id
     for _ in range(max_new_tokens):
         out = model(seq, attention_mask=mask, expert_inputs=(expert_input,), use_cache=False)
-        nxt = out.logits[:, -1, :].argmax(dim=-1, keepdim=True)
+        nxt = _sample_next_token(
+            out.logits[:, -1, :],
+            generated_ids=generated_ids,
+            temperature=temperature,
+            top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            do_sample=do_sample,
+        )
+        generated_ids.append(int(nxt.item()))
         seq = torch.cat([seq, nxt], dim=1)
         mask = torch.cat([mask, torch.ones_like(nxt)], dim=1)
+        if eos_id is not None and int(nxt.item()) == int(eos_id):
+            break
     text = tokenizer.decode(seq[0].tolist(), skip_special_tokens=True)
     return text
 
@@ -231,6 +300,8 @@ def _eval_task(model, tokenizer, eval_loader, task: TaskSpec, cfg: TaskMatrixCon
     pop_true = []
     pop_pred = []
     rationale_scores = []
+    fmt_ok = 0
+    rationale_has_content = 0
 
     with torch.no_grad():
         for batch in eval_loader:
@@ -277,9 +348,27 @@ def _eval_task(model, tokenizer, eval_loader, task: TaskSpec, cfg: TaskMatrixCon
                     exp_in = _expert_input_from_batch(
                         {"images": batch["images"][i : i + 1]}, device, cfg.expert_type
                     )
-                    gen = _generate_rationale(model, tokenizer, tokens[i : i + 1], mask[i : i + 1], exp_in, max_new_tokens=12)
+                    gen = _generate_rationale(
+                        model,
+                        tokenizer,
+                        tokens[i : i + 1],
+                        mask[i : i + 1],
+                        exp_in,
+                        max_new_tokens=int(task.gen_max_new_tokens),
+                        temperature=float(task.gen_temperature),
+                        top_p=float(task.gen_top_p),
+                        repetition_penalty=float(task.gen_repetition_penalty),
+                        do_sample=bool(task.gen_do_sample),
+                    )
                     kws = batch.get("rationale_keywords", [[]])[i]
-                    rationale_scores.append(keyword_consistency_score(gen, kws))
+                    m_ans = re.search(r"(?im)\banswer\s*:\s*([^\n\.]+)", gen)
+                    m_rat = re.search(r"(?im)\brationale\s*:\s*([^\n]+)", gen)
+                    if m_ans is not None and m_rat is not None:
+                        fmt_ok += 1
+                    rationale_text = m_rat.group(1).strip() if m_rat is not None else gen
+                    if len(rationale_text) >= 8:
+                        rationale_has_content += 1
+                    rationale_scores.append(keyword_consistency_score(rationale_text, kws))
 
     acc = correct / max(1, total)
     result: Dict[str, float] = {"accuracy": float(acc)}
@@ -296,6 +385,8 @@ def _eval_task(model, tokenizer, eval_loader, task: TaskSpec, cfg: TaskMatrixCon
         )
     if task.name == "grounded_generation":
         result["rationale_consistency"] = float(sum(rationale_scores) / max(1, len(rationale_scores)))
+        result["format_compliance"] = float(fmt_ok / max(1, len(rationale_scores)))
+        result["rationale_nonempty_rate"] = float(rationale_has_content / max(1, len(rationale_scores)))
     return result
 
 
@@ -349,7 +440,8 @@ def run_task_matrix(cfg: TaskMatrixConfig) -> List[Dict]:
                 "evidence_dim": cfg.evidence_dim,
                 "metric": 0.0,
                 "status": "error",
-                "error": str(exc),
+                "error": str(exc) or repr(exc),
+                "traceback": traceback.format_exc(limit=5),
             }
         rows.append(row)
         print(row)

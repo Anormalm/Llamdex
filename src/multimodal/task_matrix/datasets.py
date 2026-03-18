@@ -19,6 +19,22 @@ def _token_id_for_word(tokenizer, word: str) -> int:
     return int(ids[-1])
 
 
+def _chat_template_tokens(tokenizer, msgs) -> torch.Tensor:
+    out = tokenizer.apply_chat_template(msgs, return_tensors="pt")
+    if isinstance(out, torch.Tensor):
+        ids = out
+    elif hasattr(out, "input_ids"):
+        ids = out.input_ids
+    elif isinstance(out, dict) and "input_ids" in out:
+        ids = out["input_ids"]
+    else:
+        raw_ids = tokenizer.apply_chat_template(msgs, tokenize=True)
+        ids = torch.tensor(raw_ids, dtype=torch.long).unsqueeze(0)
+    if ids.ndim == 1:
+        ids = ids.unsqueeze(0)
+    return ids.squeeze(0).long()
+
+
 def _build_codebook(tokenizer, n: int):
     candidates = list("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()[]{}<>?/|")
     codes = []
@@ -106,7 +122,7 @@ class VQASubsetDataset(Dataset):
         mapping = ", ".join([f"{self.codes[i]}={w}" for i, w in enumerate(self.answer_vocab[:50])])
         prompt = f"Question: {q} Answer with one code only. Codes: {mapping}."
         msgs = [{"role": "system", "content": "Answer with one code only."}, {"role": "user", "content": prompt}]
-        tok = self.tokenizer.apply_chat_template(msgs, return_tensors="pt").squeeze(0)
+        tok = _chat_template_tokens(self.tokenizer, msgs)
         mask = (tok != self.tokenizer.pad_token_id).long()
         return {
             "images": img,
@@ -151,7 +167,7 @@ class FineGrainedPetDataset(Dataset):
         mapping = ", ".join([f"{self.codes[i]}={name}" for i, name in enumerate(self.class_names)])
         prompt = f"Classify this pet image. Answer with one code only. Codes: {mapping}."
         msgs = [{"role": "system", "content": "Answer with one code only."}, {"role": "user", "content": prompt}]
-        tok = self.tokenizer.apply_chat_template(msgs, return_tensors="pt").squeeze(0)
+        tok = _chat_template_tokens(self.tokenizer, msgs)
         mask = (tok != self.tokenizer.pad_token_id).long()
         code = self.codes[int(label)]
         return {
@@ -212,7 +228,7 @@ class PopulationBagDataset(Dataset):
             "Answer with one integer 0 to 10."
         )
         msgs = [{"role": "system", "content": "Answer with one integer only."}, {"role": "user", "content": prompt}]
-        tok = self.tokenizer.apply_chat_template(msgs, return_tensors="pt").squeeze(0)
+        tok = _chat_template_tokens(self.tokenizer, msgs)
         mask = (tok != self.tokenizer.pad_token_id).long()
         return {
             "images": images,
@@ -236,7 +252,7 @@ class GroundedGenerationDataset(FineGrainedPetDataset):
             f"Format: Answer: <code>. Rationale: <short sentence>."
         )
         msgs = [{"role": "system", "content": "Follow format strictly."}, {"role": "user", "content": prompt}]
-        tok = self.tokenizer.apply_chat_template(msgs, return_tensors="pt").squeeze(0)
+        tok = _chat_template_tokens(self.tokenizer, msgs)
         row["prompt_tokens"] = tok
         row["prompt_mask"] = (tok != self.tokenizer.pad_token_id).long()
         row["task_name"] = "grounded_generation"
@@ -277,4 +293,3 @@ def collate_task_batch(batch: List[Dict]) -> Dict:
     if "rationale_target" in batch[0]:
         out["rationale_target"] = [x["rationale_target"] for x in batch]
     return out
-
