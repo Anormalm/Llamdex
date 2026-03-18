@@ -4,12 +4,11 @@ import sys
 
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
-from src.multimodal.trainers.plan1_trainer import TrainPlan1Args, train_plan1
-
 
 def parse_args():
     p = argparse.ArgumentParser(description="Plan 1: train semantic evidence injection connectors")
-    p.add_argument("--mistral_models_path", type=str, default="model/llm")
+    p.add_argument("--server_models_path", type=str, default="/disk1/lfhu/hf_cache")
+    p.add_argument("--mistral_models_path", type=str, default=None, help="Legacy alias for --server_models_path.")
     p.add_argument("--model_name", type=str, default="Qwen/Qwen3.5-9B")
     p.add_argument("--run_dir", type=str, required=True)
     p.add_argument("--dataset_name", type=str, default="dtd", choices=["cifar10", "cifar100", "dtd", "oxford_pet", "hospital_text"])
@@ -46,6 +45,7 @@ def parse_args():
     p.add_argument("--adapter_activation", type=str, default="gelu", choices=["gelu", "relu"])
     p.add_argument("--tune_layernorm", type=int, default=0, choices=[0, 1])
     p.add_argument("--inject_location", type=str, default="post_attn", choices=["layer_input", "post_attn", "pre_ffn", "post_ffn"])
+    p.add_argument("--fusion_policy", type=str, default="pre_attn_overwrite", choices=["pre_attn_overwrite", "post_attn_router_parallel"])
     p.add_argument("--load_in_4bit", type=int, default=0, choices=[0, 1])
     p.add_argument("--bnb_4bit_compute_dtype", type=str, default="bfloat16", choices=["bfloat16", "float16", "float32"])
     p.add_argument("--bnb_4bit_quant_type", type=str, default="nf4", choices=["nf4", "fp4"])
@@ -59,8 +59,12 @@ def parse_args():
 
 if __name__ == "__main__":
     a = parse_args()
+    if a.mistral_models_path:
+        a.server_models_path = a.mistral_models_path
+    from src.multimodal.trainers.plan1_trainer import TrainPlan1Args, train_plan1
+
     args = TrainPlan1Args(
-        mistral_models_path=a.mistral_models_path,
+        server_models_path=a.server_models_path,
         model_name=a.model_name,
         run_dir=a.run_dir,
         dataset_name=a.dataset_name,
@@ -96,6 +100,7 @@ if __name__ == "__main__":
         adapter_activation=a.adapter_activation,
         tune_layernorm=bool(a.tune_layernorm),
         inject_location=a.inject_location,
+        fusion_policy=a.fusion_policy,
         load_in_4bit=bool(a.load_in_4bit),
         bnb_4bit_compute_dtype=a.bnb_4bit_compute_dtype,
         bnb_4bit_quant_type=a.bnb_4bit_quant_type,

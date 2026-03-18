@@ -20,7 +20,11 @@ def _token_id_for_word(tokenizer, word: str) -> int:
 
 
 def _chat_template_tokens(tokenizer, msgs) -> torch.Tensor:
-    out = tokenizer.apply_chat_template(msgs, return_tensors="pt")
+    try:
+        out = tokenizer.apply_chat_template(msgs, return_tensors="pt")
+    except Exception:
+        plain = "\n".join([f"{m.get('role', 'user')}: {m.get('content', '')}" for m in msgs])
+        out = tokenizer(plain, return_tensors="pt", add_special_tokens=True)["input_ids"]
     if isinstance(out, torch.Tensor):
         ids = out
     elif hasattr(out, "input_ids"):
@@ -31,8 +35,11 @@ def _chat_template_tokens(tokenizer, msgs) -> torch.Tensor:
         raw_ids = tokenizer.apply_chat_template(msgs, tokenize=True)
         ids = torch.tensor(raw_ids, dtype=torch.long).unsqueeze(0)
     if ids.ndim == 1:
-        ids = ids.unsqueeze(0)
-    return ids.squeeze(0).long()
+        return ids.long()
+    if ids.ndim == 2:
+        # Keep logic robust across tokenizer/template variants.
+        return ids[0].long()
+    raise ValueError(f"Unexpected token shape from chat template: {tuple(ids.shape)}")
 
 
 def _build_codebook(tokenizer, n: int):
@@ -258,6 +265,39 @@ class GroundedGenerationDataset(FineGrainedPetDataset):
         row["task_name"] = "grounded_generation"
         row["rationale_target"] = " ".join(label_words)
         return row
+
+
+class StrictYesNoPetDataset(FineGrainedPetDataset):
+    def __init__(self, root: str, tokenizer, train: bool, max_samples: Optional[int] = None, seed: int = 42):
+        super().__init__(root=root, tokenizer=tokenizer, train=train, max_samples=max_samples)
+        self.rng = random.Random(seed)
+        self.yes_id = _token_id_for_word(tokenizer, "Yes")
+        self.no_id = _token_id_for_word(tokenizer, "No")
+
+    def __getitem__(self, idx):
+        i = self.indices[idx]
+        image, label = self.ds[i]
+        target_cls = self.rng.randrange(len(self.class_names))
+        answer_is_yes = int(label) == int(target_cls)
+        prompt = (
+            f"Question: Is this image a {self.class_names[target_cls]}? "
+            "Answer strictly with one token: Yes or No."
+        )
+        msgs = [
+            {"role": "system", "content": "Strict output format: one token only, Yes or No."},
+            {"role": "user", "content": prompt},
+        ]
+        tok = _chat_template_tokens(self.tokenizer, msgs)
+        mask = (tok != self.tokenizer.pad_token_id).long()
+        return {
+            "images": image,
+            "prompt_tokens": tok,
+            "prompt_mask": mask,
+            "target_token_id": torch.tensor(self.yes_id if answer_is_yes else self.no_id, dtype=torch.long),
+            "label_idx": torch.tensor(1 if answer_is_yes else 0, dtype=torch.long),
+            "task_name": "strict_yesno",
+            "allowed_token_ids": [self.yes_id, self.no_id],
+        }
 
 
 def collate_task_batch(batch: List[Dict]) -> Dict:

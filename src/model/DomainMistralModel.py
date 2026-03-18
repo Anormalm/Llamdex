@@ -5,18 +5,23 @@ from typing import Callable, Dict
 from pandas.core.roperator import rand_
 from transformers import PretrainedConfig
 from transformers.modeling_outputs import CausalLMOutputWithPast
-from transformers.models.mistral.modeling_mistral import (
-    MistralDecoderLayer,
-    MistralForCausalLM,
-    MistralModel,
-    MISTRAL_INPUTS_DOCSTRING,
-    _CONFIG_FOR_DOC,
-    _prepare_4d_causal_attention_mask,
-)
+from transformers.models.mistral.modeling_mistral import MistralDecoderLayer, MistralForCausalLM, MistralModel
+try:
+    from transformers.models.mistral.modeling_mistral import MISTRAL_INPUTS_DOCSTRING
+except Exception:
+    MISTRAL_INPUTS_DOCSTRING = ""
+try:
+    from transformers.models.mistral.modeling_mistral import _prepare_4d_causal_attention_mask
+except Exception:
+    _prepare_4d_causal_attention_mask = None
+try:
+    from transformers.models.mistral.modeling_mistral import create_causal_mask, create_sliding_window_causal_mask
+except Exception:
+    create_causal_mask = None
+    create_sliding_window_causal_mask = None
 from transformers.utils import (
     add_start_docstrings_to_model_forward,
     logging,
-    replace_return_docstrings,
 )
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.cache_utils import Cache, DynamicCache
@@ -334,9 +339,9 @@ class DomainMistralModel(MistralModel):
         else:
             position_ids = position_ids.view(-1, seq_length).long()
 
-        if self._use_flash_attention_2:
+        if getattr(self, "_use_flash_attention_2", False):
             causal_mask = attention_mask if (attention_mask is not None and 0 in attention_mask) else None
-        else:
+        elif _prepare_4d_causal_attention_mask is not None:
             causal_mask = _prepare_4d_causal_attention_mask(
                 attention_mask,
                 (batch_size, seq_length),
@@ -344,6 +349,24 @@ class DomainMistralModel(MistralModel):
                 past_key_values_length,
                 sliding_window=self.config.sliding_window,
             )
+        elif create_causal_mask is not None:
+            if cache_position is None:
+                cache_position = torch.arange(
+                    past_key_values_length,
+                    past_key_values_length + seq_length,
+                    device=inputs_embeds.device,
+                )
+            mask_fn = create_causal_mask if self.config.sliding_window is None else create_sliding_window_causal_mask
+            causal_mask = mask_fn(
+                config=self.config,
+                input_embeds=inputs_embeds,
+                attention_mask=attention_mask,
+                cache_position=cache_position,
+                past_key_values=past_key_values,
+                position_ids=position_ids,
+            )
+        else:
+            causal_mask = attention_mask
 
         hidden_states = inputs_embeds
 

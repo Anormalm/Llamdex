@@ -6,7 +6,12 @@ from .expert_encoders import (
 )
 from .builders import EncoderEvidenceBuilder
 from .prefix_injection_operator import PrefixInjectionOperator
-from .runner import AblationConfig, run_ablation_grid, run_single_experiment
+try:
+    from .runner import AblationConfig, run_ablation_grid, run_single_experiment
+except Exception:  # optional in lightweight/partial environments
+    AblationConfig = None
+    run_ablation_grid = None
+    run_single_experiment = None
 
 __all__ = [
     "CLIPSigLIPExpertEncoder",

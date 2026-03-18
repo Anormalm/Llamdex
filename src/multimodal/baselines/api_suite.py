@@ -99,6 +99,7 @@ class APIBaselineSuiteConfig:
     out_json: str = "runs/api_baseline_suite_results.json"
     out_summary_csv: str = "runs/api_baseline_suite_results.summary.csv"
     out_summary_json: str = "runs/api_baseline_suite_results.summary.json"
+    hf_cache_dir: str = "runs/hf_cache_tiny"
 
 
 def _prepare_image_for_api(img_t: torch.Tensor) -> str:
@@ -535,7 +536,7 @@ def run_api_baseline_suite(cfg: APIBaselineSuiteConfig) -> List[Dict]:
     set_seed(cfg.seed)
     tokenizer = AutoTokenizer.from_pretrained(
         "hf-internal-testing/tiny-random-MistralForCausalLM",
-        cache_dir="runs/hf_cache_tiny",
+        cache_dir=cfg.hf_cache_dir,
         use_fast=False,
     )
     if tokenizer.pad_token is None:

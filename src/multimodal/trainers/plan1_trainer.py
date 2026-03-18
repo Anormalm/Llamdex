@@ -34,7 +34,7 @@ from transformers import AutoTokenizer as EncoderTokenizer
 
 @dataclass
 class TrainPlan1Args:
-    mistral_models_path: str = "model/llm"
+    server_models_path: str = "/disk1/lfhu/hf_cache"
     model_name: str = "Qwen/Qwen3.5-9B"
     run_dir: str = "runs/plan1_default"
     dataset_name: str = "dtd"
@@ -70,6 +70,7 @@ class TrainPlan1Args:
     adapter_activation: str = "gelu"
     tune_layernorm: bool = False
     inject_location: str = "post_attn"
+    fusion_policy: str = "pre_attn_overwrite"
     load_in_4bit: bool = False
     bnb_4bit_compute_dtype: str = "bfloat16"
     bnb_4bit_quant_type: str = "nf4"
@@ -81,13 +82,13 @@ class TrainPlan1Args:
 
 
 def _build_model_and_tokenizer(args: TrainPlan1Args):
-    resolved_model_name, reason = resolve_backbone(args.model_name, args.mistral_models_path)
+    resolved_model_name, reason = resolve_backbone(args.model_name, args.server_models_path)
     if resolved_model_name != args.model_name:
         print(f"[plan1] backbone: {args.model_name} -> {resolved_model_name} ({reason})")
     args.model_name = resolved_model_name
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name,
-        cache_dir=args.mistral_models_path,
+        cache_dir=args.server_models_path,
         torch_dtype=torch.bfloat16,
         use_fast=False,
         trust_remote_code=True,
@@ -96,7 +97,7 @@ def _build_model_and_tokenizer(args: TrainPlan1Args):
         tokenizer.pad_token = tokenizer.unk_token
     model = DomainQwenForCausalLM.from_pretrained_qwen(
         args.model_name,
-        cache_dir=args.mistral_models_path,
+        cache_dir=args.server_models_path,
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         load_in_4bit=args.load_in_4bit,
         bnb_4bit_compute_dtype=args.bnb_4bit_compute_dtype,
@@ -172,7 +173,7 @@ def _attach_semantic_expert(args: TrainPlan1Args, model, tokenizer):
         evidence_builder = TextEvidenceBuilder(
             evidence_dim=args.evidence_dim,
             text_encoder_model_id=args.text_encoder_model_id,
-            cache_dir=args.mistral_models_path,
+            cache_dir=args.server_models_path,
         )
     elif args.evidence_source == "diffusion_future":
         vision_expert = None
@@ -187,7 +188,13 @@ def _attach_semantic_expert(args: TrainPlan1Args, model, tokenizer):
         alpha=args.alpha,
     )
     semantic_expert = SemanticEvidenceDomainExpert(evidence_builder=evidence_builder, projector=projector)
-    model.model.layers[args.layer_to_add].add_expert_(semantic_expert, map_to_expert_emb=None)
+    layer = model.model.layers[args.layer_to_add]
+    if hasattr(layer, "add_expert_"):
+        layer.add_expert_(semantic_expert, map_to_expert_emb=None)
+    else:
+        if not hasattr(model, "_external_experts"):
+            model._external_experts = nn.ModuleList()
+        model._external_experts.append(semantic_expert)
     model.configure_injection_(layer_id=args.layer_to_add, inject_location=args.inject_location)
     return model, semantic_expert, vision_expert
 
@@ -384,7 +391,7 @@ def train_plan1(args: TrainPlan1Args):
 
     text_tokenizer = None
     if args.evidence_source == "text":
-        text_tokenizer = EncoderTokenizer.from_pretrained(args.text_encoder_model_id, cache_dir=args.mistral_models_path)
+        text_tokenizer = EncoderTokenizer.from_pretrained(args.text_encoder_model_id, cache_dir=args.server_models_path)
 
     device = torch.device(args.device if torch.cuda.is_available() and args.device.startswith("cuda") else "cpu")
     if not model.is_quantized_4bit:

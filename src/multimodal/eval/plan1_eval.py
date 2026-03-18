@@ -53,7 +53,7 @@ def _chat_template_to_ids(tokenizer, messages) -> torch.Tensor:
 
 @dataclass
 class EvalPlan1Args:
-    mistral_models_path: str = "model/llm"
+    server_models_path: str = "/disk1/lfhu/hf_cache"
     model_name: str = "Qwen/Qwen3.5-9B"
     connectors_path: Optional[str] = None
     dataset_name: str = "dtd"
@@ -86,6 +86,7 @@ class EvalPlan1Args:
     adapter_activation: str = "gelu"
     tune_layernorm: bool = False
     inject_location: str = "post_attn"
+    fusion_policy: str = "pre_attn_overwrite"
     enforce_checkpoint_compat: bool = False
     load_in_4bit: bool = False
     bnb_4bit_compute_dtype: str = "bfloat16"
@@ -159,13 +160,13 @@ def _yes_no_token_sets(tokenizer):
 
 
 def _build_model(args: EvalPlan1Args):
-    resolved_model_name, reason = resolve_backbone(args.model_name, args.mistral_models_path)
+    resolved_model_name, reason = resolve_backbone(args.model_name, args.server_models_path)
     if resolved_model_name != args.model_name:
         print(f"[plan1] backbone: {args.model_name} -> {resolved_model_name} ({reason})")
     args.model_name = resolved_model_name
     tokenizer = AutoTokenizer.from_pretrained(
         args.model_name,
-        cache_dir=args.mistral_models_path,
+        cache_dir=args.server_models_path,
         torch_dtype=torch.bfloat16,
         use_fast=False,
         trust_remote_code=True,
@@ -174,7 +175,7 @@ def _build_model(args: EvalPlan1Args):
         tokenizer.pad_token = tokenizer.unk_token
     model = DomainQwenForCausalLM.from_pretrained_qwen(
         args.model_name,
-        cache_dir=args.mistral_models_path,
+        cache_dir=args.server_models_path,
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         load_in_4bit=args.load_in_4bit,
         bnb_4bit_compute_dtype=args.bnb_4bit_compute_dtype,
@@ -260,13 +261,19 @@ def _build_connectors(args: EvalPlan1Args, model):
         builder = TextEvidenceBuilder(
             evidence_dim=args.evidence_dim,
             text_encoder_model_id=args.text_encoder_model_id,
-            cache_dir=args.mistral_models_path,
+            cache_dir=args.server_models_path,
         )
     else:
         raise ValueError(args.evidence_source)
     projector = EvidenceProjector(args.evidence_dim, hidden, args.num_tokens, alpha=args.alpha)
     expert = SemanticEvidenceDomainExpert(builder, projector)
-    model.model.layers[args.layer_to_add].add_expert_(expert, map_to_expert_emb=None)
+    layer = model.model.layers[args.layer_to_add]
+    if hasattr(layer, "add_expert_"):
+        layer.add_expert_(expert, map_to_expert_emb=None)
+    else:
+        if not hasattr(model, "_external_experts"):
+            model._external_experts = torch.nn.ModuleList()
+        model._external_experts.append(expert)
 
     def _safe_load(module: torch.nn.Module, state_dict: Dict):
         cur = module.state_dict()
@@ -361,7 +368,7 @@ def evaluate_plan1(args: EvalPlan1Args) -> Dict[str, float]:
         model.num_tokens = 0
     text_tokenizer = None
     if args.evidence_source == "text":
-        text_tokenizer = EncoderTokenizer.from_pretrained(args.text_encoder_model_id, cache_dir=args.mistral_models_path)
+        text_tokenizer = EncoderTokenizer.from_pretrained(args.text_encoder_model_id, cache_dir=args.server_models_path)
 
     eval_ds = eval_loader.dataset
     class_names = getattr(eval_ds, "class_names", class_names_for_dataset(args.dataset_name))

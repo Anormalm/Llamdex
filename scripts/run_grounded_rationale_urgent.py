@@ -10,9 +10,9 @@ from src.multimodal.task_matrix.runner import TaskMatrixConfig, TaskSpec, run_ta
 
 def parse_args():
     p = argparse.ArgumentParser(description="URGENT: run grounded answer+rationale task.")
-    p.add_argument("--mistral_models_path", type=str, default="runs/hf_cache")
-    p.add_argument("--model_name", type=str, default="Qwen/Qwen3-1.7B")
-    p.add_argument("--data_root", type=str, default="./data")
+    p.add_argument("--server_models_path", type=str, default="/disk1/lfhu/hf_cache")
+    p.add_argument("--model_name", type=str, default="Qwen/Qwen3.5-9B")
+    p.add_argument("--data_root", type=str, default="/disk1/lfhu/data")
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--learning_rate", type=float, default=2e-4)
@@ -54,7 +54,7 @@ def main():
         gen_do_sample=bool(a.gen_do_sample),
     )
     cfg = TaskMatrixConfig(
-        mistral_models_path=a.mistral_models_path,
+        server_models_path=a.server_models_path,
         model_name=a.model_name,
         data_root=a.data_root,
         seed=a.seed,
@@ -75,7 +75,7 @@ def main():
     with open(a.save_config, "w", encoding="utf-8") as f:
         json.dump(
             {
-                "mistral_models_path": cfg.mistral_models_path,
+                "server_models_path": cfg.server_models_path,
                 "model_name": cfg.model_name,
                 "data_root": cfg.data_root,
                 "seed": cfg.seed,

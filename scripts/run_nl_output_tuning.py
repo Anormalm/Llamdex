@@ -13,9 +13,9 @@ from src.multimodal.task_matrix.runner import TaskMatrixConfig, TaskSpec, run_ta
 
 def parse_args():
     p = argparse.ArgumentParser(description="URGENT: NL output tuning sweep for grounded answer+rationale.")
-    p.add_argument("--mistral_models_path", type=str, default="runs/hf_cache")
-    p.add_argument("--model_name", type=str, default="Qwen/Qwen3-1.7B")
-    p.add_argument("--data_root", type=str, default="./data")
+    p.add_argument("--server_models_path", type=str, default="/disk1/lfhu/hf_cache")
+    p.add_argument("--model_name", type=str, default="Qwen/Qwen3.5-9B")
+    p.add_argument("--data_root", type=str, default="/disk1/lfhu/data")
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--learning_rate", type=float, default=2e-4)
@@ -58,6 +58,7 @@ def main():
     a = parse_args()
     grid = list(itertools.product(a.temperatures, a.top_ps, a.rep_penalties, a.do_samples))
     all_rows = []
+    out_dir = os.path.dirname(a.out_csv) or "."
     for i, (temp, top_p, rep, do_sample) in enumerate(grid):
         task = TaskSpec(
             name="grounded_generation",
@@ -73,7 +74,7 @@ def main():
             gen_do_sample=bool(do_sample),
         )
         cfg = TaskMatrixConfig(
-            mistral_models_path=a.mistral_models_path,
+            server_models_path=a.server_models_path,
             model_name=a.model_name,
             data_root=a.data_root,
             seed=a.seed + i,
@@ -87,8 +88,8 @@ def main():
             expert_model_id=a.expert_model_id,
             expert_output_dim=a.expert_output_dim,
             tasks=[task],
-            out_csv="runs/_tmp_nl_tuning.csv",
-            out_json="runs/_tmp_nl_tuning.json",
+            out_csv=os.path.join(out_dir, "_tmp_nl_tuning.csv"),
+            out_json=os.path.join(out_dir, "_tmp_nl_tuning.json"),
         )
         rows = run_task_matrix(cfg)
         row = dict(rows[0]) if rows else {"status": "error"}
@@ -112,7 +113,7 @@ def main():
     with open(a.save_config, "w", encoding="utf-8") as f:
         json.dump(
             {
-                "mistral_models_path": a.mistral_models_path,
+                "server_models_path": a.server_models_path,
                 "model_name": a.model_name,
                 "data_root": a.data_root,
                 "device": a.device,
