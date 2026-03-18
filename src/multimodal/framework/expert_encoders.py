@@ -87,6 +87,50 @@ class CLIPSigLIPExpertEncoder(ExpertEncoder):
         return emb.float()
 
 
+class DINOv2ExpertEncoder(ExpertEncoder):
+    """
+    Frozen DINOv2 vision encoder.
+    Uses CLS-style pooled output when available, otherwise falls back to the first token.
+    """
+
+    def __init__(
+        self,
+        model_id: Optional[str] = None,
+        cache_dir: str = "model/llm",
+        output_dim: Optional[int] = None,
+    ):
+        super().__init__()
+        self.expert_type = "dinov2"
+        self.model_id = model_id or "facebook/dinov2-base"
+
+        from transformers import AutoModel
+
+        self.model = AutoModel.from_pretrained(self.model_id, cache_dir=cache_dir)
+        hidden = int(getattr(self.model.config, "hidden_size", output_dim or 768))
+        self.output_dim = int(output_dim or hidden)
+        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+        self.adapter = nn.Identity() if self.output_dim == hidden else nn.Linear(hidden, self.output_dim, bias=False)
+
+        for p in self.model.parameters():
+            p.requires_grad = False
+
+    def encode(self, batch: Any) -> torch.Tensor:
+        images = batch["images"] if isinstance(batch, dict) and "images" in batch else batch
+        x = _prepare_images_01(images)
+        x = (x.to(self.mean.device) - self.mean) / self.std
+        with torch.no_grad():
+            out = self.model(pixel_values=x)
+            emb = getattr(out, "pooler_output", None)
+            if emb is None:
+                emb = out.last_hidden_state[:, 0, :]
+        emb = self.adapter(emb.float())
+        if images.ndim == 5:
+            b, n = images.shape[:2]
+            emb = emb.view(b, n, -1).mean(dim=1)
+        return emb.float()
+
+
 class GroundingDinoSAM2ExpertEncoder(ExpertEncoder):
     """
     Structured semantic encoder from detection+segmentation outputs.
@@ -295,6 +339,12 @@ def build_expert_encoder(spec: ExpertEncoderSpec) -> ExpertEncoder:
     if t in {"clip", "siglip"}:
         return CLIPSigLIPExpertEncoder(
             expert_type=t,
+            model_id=spec.model_id,
+            cache_dir=spec.cache_dir,
+            output_dim=spec.output_dim,
+        )
+    if t in {"dinov2", "dino", "dinov2_vit"}:
+        return DINOv2ExpertEncoder(
             model_id=spec.model_id,
             cache_dir=spec.cache_dir,
             output_dim=spec.output_dim,

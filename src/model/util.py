@@ -1,6 +1,9 @@
 import torch
 import torch.nn as nn
-import xgboost as xgb
+try:
+    import xgboost as xgb
+except ImportError:  # pragma: no cover - optional dependency for legacy tabular experts
+    xgb = None
 
 
 class SimpleMLP(nn.Module):
@@ -28,6 +31,8 @@ class SimpleMLP(nn.Module):
 class XGBoostModule(nn.Module):
     def __init__(self, model_path):
         super(XGBoostModule, self).__init__()
+        if xgb is None:
+            raise ImportError("xgboost is required to load XGBoostModule but is not installed in the current environment.")
         self.model = xgb.XGBClassifier()
         self.model.load_model(model_path)
 

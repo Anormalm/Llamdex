@@ -1,0 +1,68 @@
+{
+  "api_base_url": "https://api.openai.com/v1",
+  "api_chat_path": "/chat/completions",
+  "api_key_env": "OPENAI_API_KEY",
+  "timeout_s": 120,
+  "api_max_retries": 5,
+  "api_retry_base_s": 1.0,
+  "api_retry_max_s": 16.0,
+  "api_retry_jitter_s": 0.25,
+  "dataset_names": [
+    "oxford_pet"
+  ],
+  "data_root": "/disk1/lfhu/data",
+  "task_family": "single_image",
+  "qa_type": "label_code",
+  "population_output_mode": "integer",
+  "population_group_size": 8,
+  "batch_size": 1,
+  "max_eval_samples": 64,
+  "seed": 42,
+  "eval_repeats": 1,
+  "repeat_seed_stride": 1000,
+  "verbose": true,
+  "log_every_samples": 16,
+  "enable_llm_only": true,
+  "enable_two_stage": true,
+  "enable_vlm_direct": true,
+  "enable_rag": true,
+  "caption_prompt": "Describe this image in one short sentence.",
+  "rag_db_size": 128,
+  "llm_models": [
+    {
+      "name": "gpt-4.1",
+      "model_id": "gpt-4.1",
+      "enabled": true,
+      "is_vision": false,
+      "provider": "openai_compatible"
+    },
+    {
+      "name": "gpt-4.1-mini",
+      "model_id": "gpt-4.1-mini",
+      "enabled": true,
+      "is_vision": false,
+      "provider": "openai_compatible"
+    }
+  ],
+  "vlm_models": [
+    {
+      "name": "gpt-4o",
+      "model_id": "gpt-4o",
+      "enabled": true,
+      "is_vision": true,
+      "provider": "openai_compatible"
+    },
+    {
+      "name": "gpt-4o-mini",
+      "model_id": "gpt-4o-mini",
+      "enabled": true,
+      "is_vision": true,
+      "provider": "openai_compatible"
+    }
+  ],
+  "out_csv": "/disk1/lfhu/runs/api_baselines.remote.csv",
+  "out_json": "/disk1/lfhu/runs/api_baselines.remote.json",
+  "out_summary_csv": "/disk1/lfhu/runs/api_baselines.remote.summary.csv",
+  "out_summary_json": "/disk1/lfhu/runs/api_baselines.remote.summary.json",
+  "hf_cache_dir": "/disk1/lfhu/hf_cache"
+}

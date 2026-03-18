@@ -4,6 +4,10 @@ from typing import Callable, Dict
 
 from pandas.core.roperator import rand_
 from transformers import PretrainedConfig
+try:
+    from transformers import MistralConfig
+except Exception:
+    MistralConfig = None
 from transformers.modeling_outputs import CausalLMOutputWithPast
 from transformers.models.mistral.modeling_mistral import MistralDecoderLayer, MistralForCausalLM, MistralModel
 try:
@@ -36,6 +40,27 @@ from .DomainExpert import DomainExpert
 from .util import SwiGLU, SimpleMLP, XGBoostModule
 
 logger = logging.get_logger(__name__)
+
+
+def _build_offline_tiny_mistral_config():
+    if MistralConfig is None:
+        raise RuntimeError("transformers.MistralConfig is unavailable; cannot build offline tiny mistral fallback.")
+    cfg = MistralConfig(
+        vocab_size=256,
+        hidden_size=32,
+        intermediate_size=64,
+        num_hidden_layers=2,
+        num_attention_heads=4,
+        num_key_value_heads=4,
+        max_position_embeddings=128,
+        rms_norm_eps=1e-5,
+        sliding_window=128,
+        pad_token_id=0,
+        bos_token_id=1,
+        eos_token_id=2,
+    )
+    setattr(cfg, "_attn_implementation", "eager")
+    return cfg
 
 
 class AdapterLayer(nn.Module):
@@ -595,9 +620,30 @@ class DomainMistralForCausalLM(MistralForCausalLM):
 
         Returns: DomainMistralForCausalLM model with pretrained weights from MistralForCausalLM model
         """
-        model = super().from_pretrained(pretrained_model_name_or_path, *model_args, config=config,
-                                        cache_dir=cache_dir, force_download=force_download,
-                                        local_files_only=local_files_only, llamdex_padding=llamdex_padding, **kwargs)
+        try:
+            model = super().from_pretrained(
+                pretrained_model_name_or_path,
+                *model_args,
+                config=config,
+                cache_dir=cache_dir,
+                force_download=force_download,
+                local_files_only=local_files_only,
+                llamdex_padding=llamdex_padding,
+                **kwargs,
+            )
+        except OSError as exc:
+            name = str(pretrained_model_name_or_path or "")
+            if "tiny-random-MistralForCausalLM" not in name:
+                raise
+            warnings.warn(
+                "Falling back to an offline tiny Mistral config because the requested tiny test model is not cached locally.",
+                RuntimeWarning,
+            )
+            cfg = config if isinstance(config, PretrainedConfig) else _build_offline_tiny_mistral_config()
+            dtype = kwargs.get("torch_dtype", None)
+            model = cls(cfg)
+            if dtype is not None:
+                model = model.to(dtype=dtype)
 
         # wrap model with DomainMistralModel
         model.model = DomainMistralModel(model.model)

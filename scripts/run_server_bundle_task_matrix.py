@@ -15,6 +15,13 @@ def parse_args():
     p.add_argument("--load_bundle_dir", type=str, required=True, help="Path to uploaded bundle directory.")
     p.add_argument("--out_csv", type=str, default="/disk1/lfhu/runs/server_bundle_eval.csv")
     p.add_argument("--out_json", type=str, default="/disk1/lfhu/runs/server_bundle_eval.json")
+    p.add_argument(
+        "--baseline_modes",
+        type=str,
+        nargs="+",
+        default=["overwrite", "router_parallel", "llm_only", "text_prompt_only"],
+        help="Comparable task-matrix baselines. expert_only is intentionally unsupported.",
+    )
     p.add_argument("--device", type=str, default="cpu")
     p.add_argument("--seed", type=int, default=42)
     return p.parse_args()
@@ -36,6 +43,7 @@ def main():
         expert_type="tabular",
         expert_output_dim=32,
         load_bundle_dir=a.load_bundle_dir,
+        baseline_modes=a.baseline_modes,
         tasks=[
             TaskSpec(name="finegrained", train_steps=1, max_train_samples=32, max_eval_samples=64, batch_size=8),
             TaskSpec(name="strict_yesno", train_steps=1, max_train_samples=32, max_eval_samples=64, batch_size=8),
@@ -53,4 +61,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

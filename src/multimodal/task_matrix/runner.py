@@ -23,7 +23,7 @@ from src.multimodal.injection import (
     SemanticEvidenceDomainExpert,
     build_fusion_policy,
 )
-from src.multimodal.server import load_expert_bundle, save_expert_bundle
+from src.multimodal.server import BundleCompatibilitySpec, load_expert_bundle, save_expert_bundle
 from src.multimodal.task_matrix.datasets import (
     FineGrainedPetDataset,
     GroundedGenerationDataset,
@@ -41,6 +41,9 @@ from src.multimodal.task_matrix.metrics import (
 )
 from src.multimodal.tasks.parsing import parse_population_answer, population_bin_to_fraction_midpoint
 from src.multimodal.utils.repro import set_seed
+
+
+BASELINE_MODES = {"llm_only", "text_prompt_only", "overwrite", "router_parallel"}
 
 
 @dataclass
@@ -82,6 +85,7 @@ class TaskMatrixConfig:
     expert_output_dim: int = 512
     use_runtime_detector: bool = False
     fusion_policy: str = "pre_attn_overwrite"  # pre_attn_overwrite|post_attn_router_parallel
+    baseline_modes: List[str] = field(default_factory=lambda: ["overwrite"])
     save_bundle_dir: Optional[str] = None
     load_bundle_dir: Optional[str] = None
     label_schema: Optional[Dict[str, object]] = None
@@ -93,6 +97,33 @@ class TaskMatrixConfig:
 
 def _device(device: str) -> torch.device:
     return torch.device(device if torch.cuda.is_available() and device.startswith("cuda") else "cpu")
+
+
+def _normalize_baseline_modes(modes: List[str]) -> List[str]:
+    aliases = {
+        "injection": "overwrite",
+        "injection_overwrite": "overwrite",
+        "pre_attn_overwrite": "overwrite",
+        "post_attn_router_parallel": "router_parallel",
+    }
+    out = []
+    for raw in modes or ["overwrite"]:
+        mode = aliases.get(str(raw).strip().lower(), str(raw).strip().lower())
+        if mode == "expert_only":
+            raise ValueError("expert_only baseline has been removed; use llm_only, text_prompt_only, overwrite, or router_parallel.")
+        if mode not in BASELINE_MODES:
+            raise ValueError(f"Unsupported baseline_mode: {raw}")
+        if mode not in out:
+            out.append(mode)
+    return out
+
+
+def _fusion_policy_for_mode(mode: str) -> str:
+    if mode == "overwrite":
+        return "pre_attn_overwrite"
+    if mode == "router_parallel":
+        return "post_attn_router_parallel"
+    return "pre_attn_overwrite"
 
 
 def _build_model_tokenizer(cfg: TaskMatrixConfig):
@@ -125,13 +156,27 @@ class RuntimeConnector:
     inject_via_layer: bool
 
 
-def _attach_connector(cfg: TaskMatrixConfig, model) -> RuntimeConnector:
+def _attach_connector(cfg: TaskMatrixConfig, model, baseline_mode: str) -> Optional[RuntimeConnector]:
+    if baseline_mode in {"llm_only", "text_prompt_only"}:
+        return None
+
+    fusion_policy_name = _fusion_policy_for_mode(baseline_mode)
     if cfg.load_bundle_dir:
-        loaded = load_expert_bundle(cfg.load_bundle_dir)
+        loaded = load_expert_bundle(
+            cfg.load_bundle_dir,
+            compatibility=BundleCompatibilitySpec(
+                hidden_size=int(model.config.hidden_size),
+                model_name=cfg.model_name,
+                layer_idx=cfg.layer_idx,
+                fusion_policy=fusion_policy_name,
+            ),
+        )
         expert = loaded["semantic_expert"]
         fusion_policy = loaded["fusion_policy"]
+        manifest = loaded.get("manifest")
+        policy_name = manifest.fusion_policy if manifest is not None else getattr(fusion_policy, "policy_name", fusion_policy_name)
         inject_via_layer = False
-        if getattr(fusion_policy, "policy_name", "") == "pre_attn_overwrite":
+        if policy_name == "pre_attn_overwrite":
             layer = model.model.layers[cfg.layer_idx]
             if hasattr(layer, "add_expert_"):
                 layer.add_expert_(expert, map_to_expert_emb=None)
@@ -160,9 +205,9 @@ def _attach_connector(cfg: TaskMatrixConfig, model) -> RuntimeConnector:
         alpha=cfg.alpha,
     )
     expert = SemanticEvidenceDomainExpert(builder, projector)
-    fusion_policy = build_fusion_policy(cfg.fusion_policy, hidden_size=model.config.hidden_size)
+    fusion_policy = build_fusion_policy(fusion_policy_name, hidden_size=model.config.hidden_size)
     inject_via_layer = False
-    if cfg.fusion_policy == "pre_attn_overwrite":
+    if fusion_policy_name == "pre_attn_overwrite":
         layer = model.model.layers[cfg.layer_idx]
         if hasattr(layer, "add_expert_"):
             layer.add_expert_(expert, map_to_expert_emb=None)
@@ -310,24 +355,25 @@ def _apply_fusion_policy(
 
 def _forward_logits_for_batch(
     model,
-    runtime: RuntimeConnector,
+    runtime: Optional[RuntimeConnector],
     batch: Dict,
     cfg: TaskMatrixConfig,
     device: torch.device,
+    baseline_mode: str,
 ) -> torch.Tensor:
     tokens = batch["prompt_tokens"].to(device)
     mask = batch["prompt_mask"].to(device)
-    expert_input = _expert_input_from_batch(batch, device, cfg.expert_type)
+    expert_input = None if baseline_mode in {"llm_only", "text_prompt_only"} else _expert_input_from_batch(batch, device, cfg.expert_type)
     model_out = model(
         tokens,
         attention_mask=mask,
-        expert_inputs=(expert_input,) if runtime.inject_via_layer else None,
+        expert_inputs=(expert_input,) if runtime is not None and runtime.inject_via_layer else None,
         output_hidden_states=True,
         return_dict=True,
         use_cache=False,
     )
     logits = model_out.logits[:, -1, :]
-    if cfg.fusion_policy == "post_attn_router_parallel":
+    if baseline_mode == "router_parallel" and runtime is not None:
         logits = _apply_fusion_policy(
             model=model,
             runtime=runtime,
@@ -356,12 +402,15 @@ def _loss_on_allowed_ids(logits: torch.Tensor, targets: torch.Tensor, allowed_to
 
 def _train_connector(
     model,
-    runtime: RuntimeConnector,
+    runtime: Optional[RuntimeConnector],
     train_loader,
     task: TaskSpec,
     cfg: TaskMatrixConfig,
     device: torch.device,
+    baseline_mode: str,
 ):
+    if runtime is None:
+        return
     model.train()
     trainable = _unique_params(
         model.parameters(),
@@ -375,7 +424,7 @@ def _train_connector(
     while step < task.train_steps:
         for batch in train_loader:
             targets = batch["target_token_id"].to(device)
-            logits = _forward_logits_for_batch(model, runtime, batch, cfg, device)
+            logits = _forward_logits_for_batch(model, runtime, batch, cfg, device, baseline_mode)
             loss = _loss_on_allowed_ids(logits, targets, batch.get("allowed_token_ids"))
             if not loss.requires_grad:
                 step += 1
@@ -420,7 +469,7 @@ def _generate_rationale(
             use_cache=False,
         )
         step_logits = out.logits[:, -1, :]
-        if cfg.fusion_policy == "post_attn_router_parallel":
+        if getattr(runtime.fusion_policy, "policy_name", "") == "post_attn_router_parallel":
             step_logits = _apply_fusion_policy(
                 model=model,
                 runtime=runtime,
@@ -449,12 +498,13 @@ def _generate_rationale(
 
 def _eval_task(
     model,
-    runtime: RuntimeConnector,
+    runtime: Optional[RuntimeConnector],
     tokenizer,
     eval_loader,
     task: TaskSpec,
     cfg: TaskMatrixConfig,
     device: torch.device,
+    baseline_mode: str,
 ) -> Dict[str, float]:
     model.eval()
     total = 0
@@ -471,7 +521,7 @@ def _eval_task(
         for batch in eval_loader:
             tokens = batch["prompt_tokens"].to(device)
             mask = batch["prompt_mask"].to(device)
-            logits = _forward_logits_for_batch(model, runtime, batch, cfg, device)
+            logits = _forward_logits_for_batch(model, runtime, batch, cfg, device, baseline_mode)
             if task.constrained_decoding and batch.get("allowed_token_ids"):
                 pred_ids = _constrained_argmax(logits, batch["allowed_token_ids"]).cpu()
             else:
@@ -503,6 +553,8 @@ def _eval_task(
 
             if task.name == "grounded_generation":
                 for i in range(tokens.size(0)):
+                    if runtime is None:
+                        continue
                     exp_in = _expert_input_from_batch(
                         {"images": batch["images"][i : i + 1]}, device, cfg.expert_type
                     )
@@ -571,70 +623,80 @@ def run_task_matrix(cfg: TaskMatrixConfig) -> List[Dict]:
     set_seed(cfg.seed)
     device = _device(cfg.device)
     rows: List[Dict] = []
+    baseline_modes = _normalize_baseline_modes(cfg.baseline_modes)
 
     for i, task in enumerate(cfg.tasks):
-        try:
-            model, tokenizer = _build_model_tokenizer(cfg)
-            runtime = _attach_connector(cfg, model)
-            model = model.to(device).to(torch.bfloat16 if device.type == "cuda" else torch.float32)
-            runtime.semantic_expert = runtime.semantic_expert.to(device)
-            runtime.fusion_policy = runtime.fusion_policy.to(device)
-            train_loader, eval_loader = _build_task_loaders(task, tokenizer, cfg.data_root, cfg.seed + i)
-            _train_connector(model, runtime, train_loader, task, cfg, device)
-            metrics = _eval_task(model, runtime, tokenizer, eval_loader, task, cfg, device)
+        for baseline_mode in baseline_modes:
+            try:
+                model, tokenizer = _build_model_tokenizer(cfg)
+                runtime = _attach_connector(cfg, model, baseline_mode)
+                model = model.to(device).to(torch.bfloat16 if device.type == "cuda" else torch.float32)
+                if runtime is not None:
+                    runtime_dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+                    runtime.semantic_expert = runtime.semantic_expert.to(device=device, dtype=runtime_dtype)
+                    runtime.fusion_policy = runtime.fusion_policy.to(device=device, dtype=runtime_dtype)
+                train_loader, eval_loader = _build_task_loaders(task, tokenizer, cfg.data_root, cfg.seed + i)
+                _train_connector(model, runtime, train_loader, task, cfg, device, baseline_mode)
+                metrics = _eval_task(model, runtime, tokenizer, eval_loader, task, cfg, device, baseline_mode)
 
-            if cfg.save_bundle_dir:
-                bundle_dir = os.path.join(cfg.save_bundle_dir, f"{task.name}_{cfg.fusion_policy}")
-                enc_spec = {
+                if cfg.save_bundle_dir and runtime is not None:
+                    bundle_dir = os.path.join(cfg.save_bundle_dir, f"{task.name}_{baseline_mode}")
+                    enc_spec = {
+                        "expert_type": cfg.expert_type,
+                        "model_id": cfg.expert_model_id,
+                        "model_path": cfg.expert_model_path,
+                        "output_dim": cfg.expert_output_dim,
+                        "cache_dir": cfg.server_models_path,
+                        "use_runtime_detector": cfg.use_runtime_detector,
+                    }
+                    save_expert_bundle(
+                        bundle_dir,
+                        encoder_spec=enc_spec,
+                        semantic_expert=runtime.semantic_expert,
+                        fusion_policy=runtime.fusion_policy,
+                        normalization_stats=cfg.normalization_stats,
+                        label_schema=cfg.label_schema,
+                        metadata={
+                            "task": task.name,
+                            "model_name": cfg.model_name,
+                            "fusion_policy": _fusion_policy_for_mode(baseline_mode),
+                            "layer_idx": cfg.layer_idx,
+                            "feature_format": "tabular" if cfg.expert_type in {"xgboost", "ft_transformer", "tabpfn", "tabular"} else "image_tensor",
+                        },
+                    )
+
+                row = {
+                    "task": task.name,
+                    "baseline_mode": baseline_mode,
                     "expert_type": cfg.expert_type,
-                    "model_id": cfg.expert_model_id,
-                    "model_path": cfg.expert_model_path,
-                    "output_dim": cfg.expert_output_dim,
-                    "cache_dir": cfg.server_models_path,
-                    "use_runtime_detector": cfg.use_runtime_detector,
+                    "backbone": cfg.model_name,
+                    "fusion_policy": _fusion_policy_for_mode(baseline_mode),
+                    "k": cfg.num_tokens if runtime is not None else 0,
+                    "layer_idx": cfg.layer_idx,
+                    "evidence_dim": cfg.evidence_dim if runtime is not None else 0,
+                    "metric": metrics.get("accuracy", metrics.get("mae", 0.0)),
+                    "status": "ok",
                 }
-                save_expert_bundle(
-                    bundle_dir,
-                    encoder_spec=enc_spec,
-                    semantic_expert=runtime.semantic_expert,
-                    fusion_policy=runtime.fusion_policy,
-                    normalization_stats=cfg.normalization_stats,
-                    label_schema=cfg.label_schema,
-                    metadata={
-                        "task": task.name,
-                        "model_name": cfg.model_name,
-                        "fusion_policy": cfg.fusion_policy,
-                    },
-                )
-
-            row = {
-                "task": task.name,
-                "expert_type": cfg.expert_type,
-                "backbone": cfg.model_name,
-                "fusion_policy": cfg.fusion_policy,
-                "k": cfg.num_tokens,
-                "layer_idx": cfg.layer_idx,
-                "evidence_dim": cfg.evidence_dim,
-                "metric": metrics.get("accuracy", metrics.get("mae", 0.0)),
-                "status": "ok",
-            }
-            row.update(metrics)
-        except Exception as exc:
-            row = {
-                "task": task.name,
-                "expert_type": cfg.expert_type,
-                "backbone": cfg.model_name,
-                "fusion_policy": cfg.fusion_policy,
-                "k": cfg.num_tokens,
-                "layer_idx": cfg.layer_idx,
-                "evidence_dim": cfg.evidence_dim,
-                "metric": 0.0,
-                "status": "error",
-                "error": str(exc) or repr(exc),
-                "traceback": traceback.format_exc(limit=5),
-            }
-        rows.append(row)
-        print(row)
+                if baseline_mode == "text_prompt_only":
+                    row["baseline_note"] = "Prompt-only baseline over the standardized task text; no uploaded expert or injection path."
+                row.update(metrics)
+            except Exception as exc:
+                row = {
+                    "task": task.name,
+                    "baseline_mode": baseline_mode,
+                    "expert_type": cfg.expert_type,
+                    "backbone": cfg.model_name,
+                    "fusion_policy": _fusion_policy_for_mode(baseline_mode),
+                    "k": cfg.num_tokens if baseline_mode in {"overwrite", "router_parallel"} else 0,
+                    "layer_idx": cfg.layer_idx,
+                    "evidence_dim": cfg.evidence_dim if baseline_mode in {"overwrite", "router_parallel"} else 0,
+                    "metric": 0.0,
+                    "status": "error",
+                    "error": str(exc) or repr(exc),
+                    "traceback": traceback.format_exc(limit=5),
+                }
+            rows.append(row)
+            print(row)
 
     _save_rows(rows, cfg.out_csv, cfg.out_json)
     return rows

@@ -69,8 +69,8 @@ class TrainPlan1Args:
     adapter_dropout: float = 0.0
     adapter_activation: str = "gelu"
     tune_layernorm: bool = False
-    inject_location: str = "post_attn"
-    fusion_policy: str = "pre_attn_overwrite"
+    inject_location: str = "layer_input"
+    fusion_policy: str = "post_attn_router_parallel"
     load_in_4bit: bool = False
     bnb_4bit_compute_dtype: str = "bfloat16"
     bnb_4bit_quant_type: str = "nf4"

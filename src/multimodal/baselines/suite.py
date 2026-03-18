@@ -56,7 +56,6 @@ class BaselineSuiteConfig:
     # two-stage caption
     caption_model_id: str = "Salesforce/blip-image-captioning-base"
     enable_llm_only: bool = True
-    enable_expert_only: bool = True
     enable_two_stage: bool = True
     enable_rag: bool = True
     # rag
@@ -275,43 +274,6 @@ def _evaluate_llm_only(cfg: BaselineSuiteConfig, model, tokenizer, loader, dev):
     metrics = {"accuracy": correct / max(1, total)}
     if cfg.task_family == "single_image" and all_true:
         metrics["f1"] = macro_f1_from_ints(all_true, all_pred, num_classes=max(1, len(set(all_true))))
-    if cfg.task_family == "population":
-        metrics["mae"] = mean_absolute_error(pop_true, pop_pred)
-    return metrics, latency
-
-
-def _evaluate_expert_only(cfg: BaselineSuiteConfig, loader, dev):
-    num_classes = _num_classes(cfg.dataset_name)
-    expert = build_vision_expert("classifier", cfg.expert_checkpoint, num_classes, init_weights=cfg.expert_init_weights).to(dev)
-    t0 = time.time()
-    correct = total = 0
-    pop_true = []
-    pop_pred = []
-    with torch.no_grad():
-        for batch in loader:
-            if cfg.task_family == "single_image":
-                logits = expert(batch["images"].to(dev)).logits.float()
-                pred_cls = logits.argmax(dim=-1).cpu().tolist()
-                gts = batch["labels"].cpu().tolist()
-                correct += sum(int(a == b) for a, b in zip(pred_cls, gts))
-                total += len(gts)
-            else:
-                images = batch["images"].to(dev)
-                b, n = images.shape[:2]
-                flat = images.view(b * n, *images.shape[2:])
-                logits = expert(flat).logits.float().view(b, n, -1)
-                probs = torch.softmax(logits, dim=-1).mean(dim=1)
-                tgt = batch["target_class"].to(dev)
-                frac = probs[torch.arange(b, device=dev), tgt].cpu().tolist()
-                gt = batch["fraction"].cpu().tolist()
-                pop_pred.extend(frac)
-                pop_true.extend(gt)
-                pbin = [population_fraction_to_bin(x, mode="integer") for x in frac]
-                gbin = [population_fraction_to_bin(x, mode="integer") for x in gt]
-                correct += sum(int(a == b) for a, b in zip(pbin, gbin))
-                total += b
-    latency = (time.time() - t0) / max(1, total)
-    metrics = {"accuracy": correct / max(1, total)}
     if cfg.task_family == "population":
         metrics["mae"] = mean_absolute_error(pop_true, pop_pred)
     return metrics, latency
@@ -570,26 +532,7 @@ def run_baseline_suite(cfg: BaselineSuiteConfig) -> List[Dict]:
             }
         )
 
-    # 2) Expert-only
-    if cfg.enable_expert_only:
-        try:
-            met, lat = _evaluate_expert_only(cfg, loader, dev)
-            rows.append(
-                {
-                    "model_type": "expert_only",
-                    "dataset": cfg.dataset_name,
-                    "metric": float(met.get("accuracy", met.get("mae", 0.0))),
-                    "metric_name": "accuracy" if "accuracy" in met else "mae",
-                    "params_trainable": 0,
-                    "inference_latency": float(lat),
-                    **met,
-                    "status": "ok",
-                }
-            )
-        except Exception as exc:
-            rows.append({"model_type": "expert_only", "dataset": cfg.dataset_name, "metric": 0.0, "params_trainable": 0, "inference_latency": 0.0, "status": "error", "error": str(exc)})
-
-    # 3) Two-stage caption -> LLM
+    # 2) Two-stage caption -> LLM
     if cfg.enable_two_stage:
         try:
             met, lat = _two_stage_caption_eval(cfg, model, tokenizer, loader, dev)
@@ -608,7 +551,7 @@ def run_baseline_suite(cfg: BaselineSuiteConfig) -> List[Dict]:
         except Exception as exc:
             rows.append({"model_type": "two_stage_caption_llm", "dataset": cfg.dataset_name, "metric": 0.0, "params_trainable": _count_trainable(model), "inference_latency": 0.0, "status": "error", "error": str(exc)})
 
-    # 4) Frozen SOTA VLMs
+    # 3) Frozen SOTA VLMs
     vlms = cfg.frozen_vlms or [
         FrozenVLMConfig(model_type="llava_next", model_id="llava-hf/llava-v1.6-mistral-7b-hf", enabled=True),
         FrozenVLMConfig(model_type="qwen25_vl", model_id="Qwen/Qwen2.5-VL-7B-Instruct", enabled=True),

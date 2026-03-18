@@ -1,7 +1,10 @@
 import torch
 import torch.nn as nn
 from transformers import T5Tokenizer, T5ForConditionalGeneration, AutoConfig, AutoModel, AutoTokenizer
-import xgboost as xgb
+try:
+    import xgboost as xgb
+except ImportError:  # pragma: no cover - optional dependency for legacy GBDT experts
+    xgb = None
 import os
 import numpy as np
 import joblib

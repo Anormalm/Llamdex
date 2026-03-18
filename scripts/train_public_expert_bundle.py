@@ -20,6 +20,13 @@ def parse_args():
     p.add_argument("--max_train_samples", type=int, default=512)
     p.add_argument("--max_eval_samples", type=int, default=128)
     p.add_argument("--batch_size", type=int, default=8)
+    p.add_argument(
+        "--baseline_modes",
+        type=str,
+        nargs="+",
+        default=["overwrite"],
+        help="Baselines to run during export; overwrite/router_parallel use injected connector training.",
+    )
     return p.parse_args()
 
 
@@ -42,6 +49,7 @@ def main():
         expert_type="tabular",
         expert_output_dim=32,
         fusion_policy=a.fusion_policy,
+        baseline_modes=a.baseline_modes,
         save_bundle_dir=bundle_root,
         label_schema={"task": "finegrained_pet_codes"},
         normalization_stats={"note": "expert encoder handles normalization internally"},

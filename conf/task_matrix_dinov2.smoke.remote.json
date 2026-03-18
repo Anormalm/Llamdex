@@ -1,0 +1,33 @@
+{
+  "server_models_path": "/disk1/lfhu/hf_cache",
+  "model_name": "Qwen/Qwen3.5-9B",
+  "data_root": "/disk1/lfhu/data",
+  "seed": 42,
+  "device": "cuda",
+  "learning_rate": 0.0002,
+  "evidence_dim": 256,
+  "num_tokens": 4,
+  "layer_idx": 0,
+  "alpha": 1.0,
+  "expert_type": "dinov2",
+  "expert_model_id": "facebook/dinov2-base",
+  "expert_output_dim": 768,
+  "use_runtime_detector": false,
+  "baseline_modes": [
+    "llm_only",
+    "text_prompt_only",
+    "router_parallel"
+  ],
+  "out_csv": "/disk1/lfhu/runs/task_matrix_dinov2_smoke.remote.csv",
+  "out_json": "/disk1/lfhu/runs/task_matrix_dinov2_smoke.remote.json",
+  "tasks": [
+    {
+      "name": "finegrained",
+      "train_steps": 4,
+      "max_train_samples": 32,
+      "max_eval_samples": 16,
+      "batch_size": 2,
+      "constrained_decoding": true
+    }
+  ]
+}
