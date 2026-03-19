@@ -9,6 +9,7 @@ from typing import Dict, List, Tuple
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from src.multimodal.eval.plan1_eval import EvalPlan1Args, evaluate_plan1
+from src.multimodal.data import load_text_privacy_policy, validate_text_privacy_jsonl
 from src.multimodal.trainers.plan1_trainer import TrainPlan1Args, train_plan1
 
 
@@ -69,7 +70,7 @@ def _tfidf_logreg_accuracy(train_x: List[str], train_y: List[str], eval_x: List[
 
 def parse_args():
     p = argparse.ArgumentParser(description="Text-only baseline suite for hospital-style privacy setting.")
-    p.add_argument("--mistral_models_path", type=str, default="model/llm")
+    p.add_argument("--server_models_path", type=str, default="/disk1/lfhu/hf_cache")
     p.add_argument("--model_name", type=str, default="Qwen/Qwen3.5-9B")
     p.add_argument("--train_file", type=str, required=True, help="Hospital train file (csv/jsonl).")
     p.add_argument("--eval_file", type=str, required=True, help="Hospital eval file (csv/jsonl).")
@@ -87,6 +88,7 @@ def parse_args():
     p.add_argument("--alpha", type=float, default=1.0)
     p.add_argument("--device", type=str, default="cuda")
     p.add_argument("--seed", type=int, default=42)
+    p.add_argument("--privacy_policy", type=str, default="conf/text_privacy_mode.v1.json")
     p.add_argument("--out_csv", type=str, default="runs/hospital_text_baseline_suite.csv")
     p.add_argument("--out_json", type=str, default="runs/hospital_text_baseline_suite.json")
     return p.parse_args()
@@ -98,11 +100,18 @@ def main():
     os.makedirs(a.run_dir, exist_ok=True)
     if "tiny-random" in a.model_name.lower():
         print("[warning] tiny-random backbone selected; results will be capacity-limited and not industry-representative.")
+    policy = load_text_privacy_policy(a.privacy_policy)
+    train_privacy_errors = validate_text_privacy_jsonl(a.train_file, policy=policy)
+    eval_privacy_errors = validate_text_privacy_jsonl(a.eval_file, policy=policy)
+    if train_privacy_errors:
+        raise ValueError(f"Train file violates text privacy policy: {train_privacy_errors[:5]}")
+    if eval_privacy_errors:
+        raise ValueError(f"Eval file violates text privacy policy: {eval_privacy_errors[:5]}")
 
     # 1) Train injection connectors on hospital text
     train_metrics = train_plan1(
         TrainPlan1Args(
-            mistral_models_path=a.mistral_models_path,
+            server_models_path=a.server_models_path,
             model_name=a.model_name,
             run_dir=a.run_dir,
             dataset_name="hospital_text",
@@ -123,7 +132,7 @@ def main():
             alpha=a.alpha,
             use_adapters=True,
             adapter_bottleneck=64,
-            inject_location="post_attn",
+            inject_location="layer_input",
             device=a.device,
             seed=a.seed,
         )
@@ -136,7 +145,7 @@ def main():
     # 2) Evaluate injection / llm_only
     inj = evaluate_plan1(
         EvalPlan1Args(
-            mistral_models_path=a.mistral_models_path,
+            server_models_path=a.server_models_path,
             model_name=a.model_name,
             connectors_path=ckpt,
             dataset_name="hospital_text",
@@ -150,13 +159,13 @@ def main():
             baseline="injection",
             use_adapters=True,
             adapter_bottleneck=64,
-            inject_location="post_attn",
+            inject_location="layer_input",
             device=a.device,
         )
     )
     llm = evaluate_plan1(
         EvalPlan1Args(
-            mistral_models_path=a.mistral_models_path,
+            server_models_path=a.server_models_path,
             model_name=a.model_name,
             dataset_name="hospital_text",
             hospital_eval_file=a.eval_file,
@@ -169,7 +178,7 @@ def main():
             baseline="llm_only",
             use_adapters=True,
             adapter_bottleneck=64,
-            inject_location="post_attn",
+            inject_location="layer_input",
             device=a.device,
         )
     )
@@ -188,7 +197,7 @@ def main():
             "dataset": "hospital_text",
             "metric_name": "accuracy",
             "metric": float(inj.get("accuracy", 0.0)),
-            "notes": "Plan-1 text-first, adapters=on, inject=post_attn",
+            "notes": "Plan-1 text-first, adapters=on, inject=layer_input, strict privacy validation enabled",
         },
         {
             "model_type": "llm_only",

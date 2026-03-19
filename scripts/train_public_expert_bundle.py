@@ -24,7 +24,7 @@ def parse_args():
         "--baseline_modes",
         type=str,
         nargs="+",
-        default=["overwrite"],
+        default=["router_parallel"],
         help="Baselines to run during export; overwrite/router_parallel use injected connector training.",
     )
     return p.parse_args()

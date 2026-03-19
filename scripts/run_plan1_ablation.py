@@ -12,7 +12,7 @@ from src.multimodal.utils.backbone import resolve_backbone
 def parse_args():
     p = argparse.ArgumentParser(description="Run Plan 1 ablations for num_tokens and injection layer")
     p.add_argument("--output_csv", type=str, default="runs/plan1_ablation_summary.csv")
-    p.add_argument("--mistral_models_path", type=str, default="model/llm")
+    p.add_argument("--server_models_path", type=str, default="/disk1/lfhu/hf_cache")
     p.add_argument("--model_name", type=str, default="Qwen/Qwen3.5-9B")
     p.add_argument("--tokens_grid", type=int, nargs="+", default=[1, 4, 8, 16])
     p.add_argument("--layers", type=int, nargs="+", default=[0, 8, 16, 24])
@@ -31,12 +31,12 @@ def main():
     args = parse_args()
     Path(os.path.dirname(args.output_csv) or ".").mkdir(parents=True, exist_ok=True)
 
-    resolved_model_name, reason = resolve_backbone(args.model_name, args.mistral_models_path)
+    resolved_model_name, reason = resolve_backbone(args.model_name, args.server_models_path)
     if resolved_model_name != args.model_name:
         print(f"[ablation] backbone: {args.model_name} -> {resolved_model_name} ({reason})", flush=True)
     args.model_name = resolved_model_name
 
-    cfg = AutoConfig.from_pretrained(args.model_name, cache_dir=args.mistral_models_path)
+    cfg = AutoConfig.from_pretrained(args.model_name, cache_dir=args.server_models_path)
     max_layers = int(getattr(cfg, "num_hidden_layers", 0))
     valid_layers = [x for x in args.layers if 0 <= int(x) < max_layers]
     if not valid_layers:
@@ -59,8 +59,8 @@ def main():
                         train_cmd = [
                             sys.executable,
                             "scripts/train_plan1.py",
-                            "--mistral_models_path",
-                            args.mistral_models_path,
+                            "--server_models_path",
+                            args.server_models_path,
                             "--model_name",
                             args.model_name,
                             "--run_dir",
@@ -95,8 +95,8 @@ def main():
                         eval_cmd = [
                             sys.executable,
                             "scripts/eval_plan1.py",
-                            "--mistral_models_path",
-                            args.mistral_models_path,
+                            "--server_models_path",
+                            args.server_models_path,
                             "--model_name",
                             args.model_name,
                             "--task_family",

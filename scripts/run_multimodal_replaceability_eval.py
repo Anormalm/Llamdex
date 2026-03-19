@@ -13,7 +13,7 @@ def _ints(values):
 
 def parse_args():
     p = argparse.ArgumentParser(description="Research-grade multimodal replaceability evaluation for prefix injection.")
-    p.add_argument("--mistral_models_path", type=str, default="model/llm")
+    p.add_argument("--server_models_path", type=str, default="/disk1/lfhu/hf_cache")
     p.add_argument("--model_name", type=str, default="Qwen/Qwen3.5-9B")
     p.add_argument("--dataset", type=str, default="dtd", choices=["cifar10", "cifar100", "dtd"])
     p.add_argument("--data_root", type=str, default="./data")
@@ -54,7 +54,7 @@ def parse_args():
 def main():
     a = parse_args()
     cfg = AblationConfig(
-        mistral_models_path=a.mistral_models_path,
+        server_models_path=a.server_models_path,
         model_name=a.model_name,
         dataset=a.dataset,
         data_root=a.data_root,

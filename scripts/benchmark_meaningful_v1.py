@@ -19,8 +19,8 @@ def run_case(args: EvalPlan1Args):
 
 def main():
     p = argparse.ArgumentParser(description="Benchmark meaningful Plan-1 tasks (v1)")
-    p.add_argument("--mistral_models_path", type=str, default="runs/hf_cache_tiny")
-    p.add_argument("--model_name", type=str, default="hf-internal-testing/tiny-random-MistralForCausalLM")
+    p.add_argument("--server_models_path", type=str, default="/disk1/lfhu/hf_cache")
+    p.add_argument("--model_name", type=str, default="Qwen/Qwen3.5-9B")
     p.add_argument("--dataset_name", type=str, default="dtd", choices=["cifar10", "cifar100", "dtd"])
     p.add_argument("--data_root", type=str, default="./data")
     p.add_argument("--expert_checkpoint", type=str, default=None)
@@ -105,7 +105,7 @@ def main():
     for spec in task_specs:
         for baseline in spec["baselines"]:
             eval_args = EvalPlan1Args(
-                mistral_models_path=a.mistral_models_path,
+                server_models_path=a.server_models_path,
                 model_name=a.model_name,
                 connectors_path=spec.get("connectors_path", a.connectors_path) if baseline == "injection" else None,
                 dataset_name=a.dataset_name,

@@ -1,5 +1,5 @@
 {
-  "mistral_models_path": "/disk1/lfhu/hf_cache",
+  "server_models_path": "/disk1/lfhu/hf_cache",
   "model_name": "Qwen/Qwen3.5-9B",
   "dataset_name": "oxford_pet",
   "data_root": "/disk1/lfhu/data",
@@ -21,11 +21,6 @@
   "enable_rag": true,
   "rag_db_size": 128,
   "frozen_vlms": [
-    {
-      "model_type": "llava_next",
-      "model_id": "llava-hf/llava-v1.6-mistral-7b-hf",
-      "enabled": false
-    },
     {
       "model_type": "qwen25_vl",
       "model_id": "Qwen/Qwen2.5-VL-7B-Instruct",

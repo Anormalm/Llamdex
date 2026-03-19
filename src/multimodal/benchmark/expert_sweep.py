@@ -14,6 +14,7 @@ class ExpertSweepSpec:
     name: str
     expert_type: str
     expert_model_id: Optional[str] = None
+    expert_model_path: Optional[str] = None
     expert_output_dim: Optional[int] = None
     enabled: bool = True
 
@@ -62,31 +63,49 @@ def run_expert_sweep(cfg: ExpertSweepConfig) -> List[Dict]:
     for spec in cfg.experts:
         if not spec.enabled:
             continue
-        run_cfg = TaskMatrixConfig(**base_cfg.__dict__)
-        run_cfg.expert_type = spec.expert_type
-        if spec.expert_model_id is not None:
-            run_cfg.expert_model_id = spec.expert_model_id
-        if spec.expert_output_dim is not None:
-            run_cfg.expert_output_dim = int(spec.expert_output_dim)
-        stem = os.path.splitext(os.path.basename(cfg.out_csv))[0]
-        out_dir = os.path.dirname(cfg.out_csv)
-        run_cfg.out_csv = os.path.join(out_dir, f"{stem}.{spec.name}.csv")
-        run_cfg.out_json = os.path.join(out_dir, f"{stem}.{spec.name}.json")
-        subrows = run_task_matrix(run_cfg)
-        for row in subrows:
-            row = dict(row)
-            row["expert_sweep_name"] = spec.name
-            row["expert_type"] = spec.expert_type
-            row["expert_model_id"] = spec.expert_model_id
-            rows.append(row)
+        try:
+            run_cfg = TaskMatrixConfig(**base_cfg.__dict__)
+            run_cfg.expert_type = spec.expert_type
+            if spec.expert_model_id is not None:
+                run_cfg.expert_model_id = spec.expert_model_id
+            if spec.expert_model_path is not None:
+                run_cfg.expert_model_path = spec.expert_model_path
+            if spec.expert_output_dim is not None:
+                run_cfg.expert_output_dim = int(spec.expert_output_dim)
+            stem = os.path.splitext(os.path.basename(cfg.out_csv))[0]
+            out_dir = os.path.dirname(cfg.out_csv)
+            run_cfg.out_csv = os.path.join(out_dir, f"{stem}.{spec.name}.csv")
+            run_cfg.out_json = os.path.join(out_dir, f"{stem}.{spec.name}.json")
+            subrows = run_task_matrix(run_cfg)
+            for row in subrows:
+                row = dict(row)
+                row["expert_sweep_name"] = spec.name
+                row["expert_type"] = spec.expert_type
+                row["expert_model_id"] = spec.expert_model_id
+                row["expert_model_path"] = spec.expert_model_path
+                rows.append(row)
+        except Exception as exc:
+            rows.append(
+                {
+                    "expert_sweep_name": spec.name,
+                    "expert_type": spec.expert_type,
+                    "expert_model_id": spec.expert_model_id,
+                    "expert_model_path": spec.expert_model_path,
+                    "metric": 0.0,
+                    "status": "error",
+                    "error": str(exc) or repr(exc),
+                }
+            )
+        _save_rows(rows, cfg.out_csv, cfg.out_json)
 
-    _save_rows(rows, cfg.out_csv, cfg.out_json)
     return rows
 
 
 def load_expert_sweep_config(path: str) -> ExpertSweepConfig:
     with open(path, "r", encoding="utf-8") as f:
         raw = json.load(f)
+    if "base_config" in raw and "base_task_matrix_config" not in raw:
+        raw["base_task_matrix_config"] = raw.pop("base_config")
     experts = [ExpertSweepSpec(**x) for x in raw.pop("experts", [])]
     cfg = ExpertSweepConfig(**raw)
     if experts:

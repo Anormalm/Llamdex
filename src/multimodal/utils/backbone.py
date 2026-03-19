@@ -43,7 +43,7 @@ def resolve_backbone(model_name: str, cache_dir: str) -> Tuple[str, str]:
     Returns: (resolved_model_name, reason)
     """
     def _qwen_runtime_supported() -> bool:
-        # Current DomainMistral wrapper depends on HF model internals.
+        # Some older local wrappers depend on HF model internals.
         # Gate Qwen selection on local transformers support to avoid hard runtime failures.
         return importlib.util.find_spec("transformers.models.qwen2") is not None or importlib.util.find_spec(
             "transformers.models.qwen3"
@@ -56,7 +56,7 @@ def resolve_backbone(model_name: str, cache_dir: str) -> Tuple[str, str]:
             return name, "user-specified (qwen-supported)"
         return (
             "HuggingFaceTB/SmolLM2-360M-Instruct",
-            "qwen requested but local transformers lacks qwen2/qwen3 support; fell back to non-mistral lightweight model",
+            "qwen requested but local transformers lacks qwen2/qwen3 support; fell back to a lightweight local model",
         )
 
     if model_name != "auto":

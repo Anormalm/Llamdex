@@ -1,5 +1,5 @@
 {
-  "mistral_models_path": "model/llm",
+  "server_models_path": "/disk1/lfhu/hf_cache",
   "model_name": "Qwen/Qwen3.5-9B",
   "train_file": "runs/hospital_train.csv",
   "eval_file": "runs/hospital_eval.csv",

@@ -1,0 +1,24 @@
+{
+  "version": "open-v1",
+  "task_families": {
+    "single_image": {
+      "answer_mode": "label_code",
+      "notes": "One-token class code outputs for fine-grained classification."
+    },
+    "yesno": {
+      "answer_mode": "binary",
+      "allowed_answers": ["Yes", "No"],
+      "notes": "Semantic parity baseline contract."
+    },
+    "population": {
+      "answer_mode": "integer_bin",
+      "allowed_answers": ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "10"],
+      "notes": "Fraction bins mapped to 0..10 inclusive."
+    },
+    "grounded_generation": {
+      "answer_mode": "answer_plus_rationale",
+      "format": "Answer: <token>. Rationale: <short sentence>.",
+      "notes": "Grounded output must preserve answer token plus a short rationale."
+    }
+  }
+}

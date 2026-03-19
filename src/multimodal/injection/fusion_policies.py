@@ -45,8 +45,10 @@ class PostAttnRouterParallelPolicy(BaseFusionPolicy):
         self.hidden_size = int(hidden_size)
         self.norm = nn.LayerNorm(self.hidden_size)
         self.expert_in = nn.Linear(self.hidden_size * 2, self.hidden_size * 2)
+        self.expert_mid = nn.Linear(self.hidden_size * 2, self.hidden_size * 2)
         self.expert_out = nn.Linear(self.hidden_size * 2, self.hidden_size)
         self.gate = nn.Linear(self.hidden_size * 2, 1)
+        self.channel_gate = nn.Linear(self.hidden_size * 2, self.hidden_size)
         nn.init.zeros_(self.expert_out.weight)
         nn.init.zeros_(self.expert_out.bias)
 
@@ -86,9 +88,10 @@ class PostAttnRouterParallelPolicy(BaseFusionPolicy):
         h2 = self.norm(h)
         z = z_ctx.to(dtype=h2.dtype)
         x = torch.cat([h2, z], dim=-1)
-        h_exp = self.expert_out(F.gelu(self.expert_in(x)))
+        h_exp = self.expert_out(F.gelu(self.expert_mid(F.gelu(self.expert_in(x)))))
         g = torch.sigmoid(self.gate(x))
-        h_out = h + g * h_exp
+        c = torch.sigmoid(self.channel_gate(x))
+        h_out = h + g * (c * h_exp)
         lm_head = getattr(model, "lm_head", None)
         if lm_head is None and hasattr(model, "base_model"):
             lm_head = getattr(model.base_model, "lm_head", None)

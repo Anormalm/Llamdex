@@ -1,6 +1,6 @@
 """
 Vision DomainExpert wrapper that integrates vision expert with Llamdex injection mechanism.
-This follows the DomainExpert interface so it can be used with existing DomainMistralModel.
+This follows the DomainExpert interface so it can be used with existing Llamdex backbones.
 """
 
 import torch
@@ -19,7 +19,7 @@ from .evidence_builder import (
 class VisionDomainExpert(nn.Module):
     """
     DomainExpert wrapper for semantic evidence injection.
-    Compatible with DomainExpert interface for integration with DomainMistralModel.
+    Compatible with the legacy DomainExpert interface used by older Llamdex scripts.
     
     Args:
         embed_size: LLM hidden size
@@ -34,7 +34,7 @@ class VisionDomainExpert(nn.Module):
         evidence_dim: Evidence vector dimension z
         task: 'single', 'yesno', or 'population'
         text_encoder_model: HuggingFace model id for text evidence encoder
-        mistral_models_path: cache path used to load text encoder
+        server_models_path: cache path used to load text encoder
         evidence_builder: Optional custom evidence builder
     """
     
@@ -52,7 +52,7 @@ class VisionDomainExpert(nn.Module):
         evidence_dim: Optional[int] = None,
         task: str = 'single',
         text_encoder_model: str = "distilroberta-base",
-        mistral_models_path: str = "model/llm",
+        server_models_path: str = "/disk1/lfhu/hf_cache",
         evidence_builder: Optional[EvidenceBuilder] = None,
     ):
         super().__init__()
@@ -64,7 +64,7 @@ class VisionDomainExpert(nn.Module):
         self.evidence_source = evidence_source
         self.task = task
         self.text_encoder_model = text_encoder_model
-        self.mistral_models_path = mistral_models_path
+        self.server_models_path = server_models_path
         
         if evidence_builder is not None:
             self.evidence_builder = evidence_builder
@@ -77,7 +77,7 @@ class VisionDomainExpert(nn.Module):
                 self.evidence_builder = TextEvidenceBuilder(
                     evidence_dim=evidence_dim,
                     text_encoder_model=text_encoder_model,
-                    cache_dir=mistral_models_path,
+                    cache_dir=server_models_path,
                 )
             else:
                 vision_expert = VisionExpert(
@@ -123,7 +123,7 @@ class VisionDomainExpert(nn.Module):
     def forward_with_features(self, x: torch.Tensor) -> torch.Tensor:
         """
         Forward pass with raw features (images).
-        This is called by DomainMistralDecoderLayer when expert_inputs is provided.
+        This is called by the active Llamdex backbone when expert inputs are provided.
         
         Args:
             x: Image tensor of shape (batch_size, 3, H, W)
@@ -181,5 +181,5 @@ class VisionDomainExpert(nn.Module):
             evidence_dim=self.evidence_dim,
             task=self.task,
             text_encoder_model=self.text_encoder_model,
-            mistral_models_path=self.mistral_models_path,
+            server_models_path=self.server_models_path,
         )

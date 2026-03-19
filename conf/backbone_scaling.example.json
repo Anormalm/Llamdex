@@ -9,7 +9,7 @@
   "expert_model_id": "openai/clip-vit-base-patch32",
   "expert_output_dim": 512,
   "use_runtime_detector": false,
-  "backbone": "domain_mistral",
+  "backbone": "domain_qwen",
   "base_k": 4,
   "base_layer_idx": 0,
   "base_evidence_dim": 256,
@@ -36,35 +36,28 @@
   "out_dir": "runs/backbone_scaling_suite",
   "backbones": [
     {
-      "name": "mistral-7b",
-      "model_name": "mistralai/Mistral-7B-Instruct-v0.3",
-      "mistral_models_path": "model/llm",
-      "enabled": true
-    },
-    {
       "name": "llama3-8b",
       "model_name": "meta-llama/Meta-Llama-3-8B-Instruct",
-      "mistral_models_path": "model/llm",
+      "server_models_path": "/disk1/lfhu/hf_cache",
       "enabled": true
     },
     {
       "name": "qwen2.5-7b",
       "model_name": "Qwen/Qwen2.5-7B-Instruct",
-      "mistral_models_path": "model/llm",
+      "server_models_path": "/disk1/lfhu/hf_cache",
       "enabled": true
     },
     {
       "name": "qwen2.5-14b",
       "model_name": "Qwen/Qwen2.5-14B-Instruct",
-      "mistral_models_path": "model/llm",
+      "server_models_path": "/disk1/lfhu/hf_cache",
       "enabled": true
     },
     {
       "name": "llama3-70b-sanity",
       "model_name": "meta-llama/Meta-Llama-3-70B-Instruct",
-      "mistral_models_path": "model/llm",
+      "server_models_path": "/disk1/lfhu/hf_cache",
       "enabled": false
     }
   ]
 }
-

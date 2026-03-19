@@ -19,7 +19,7 @@ def parse_args():
         "--baseline_modes",
         type=str,
         nargs="+",
-        default=["overwrite", "router_parallel", "llm_only", "text_prompt_only"],
+        default=["router_parallel", "llm_only", "text_prompt_only", "overwrite"],
         help="Comparable task-matrix baselines. expert_only is intentionally unsupported.",
     )
     p.add_argument("--device", type=str, default="cpu")

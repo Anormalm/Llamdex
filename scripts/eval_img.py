@@ -40,7 +40,7 @@ def set_seed(seed: int = 42):
 
 
 def evaluate_img(
-    mistral_models_path: str,
+    server_models_path: str,
     model_name: str = "Qwen/Qwen3.5-9B",
     model_state_dict: str = None,
     num_tokens: int = 10,
@@ -90,13 +90,13 @@ def evaluate_img(
     # Load tokenizer and model
     tokenizer = AutoTokenizer.from_pretrained(
         model_name,
-        cache_dir=mistral_models_path,
+        cache_dir=server_models_path,
         torch_dtype=torch.bfloat16
     )
     
     model = DomainQwenForCausalLM.from_pretrained_qwen(
         model_name,
-        cache_dir=mistral_models_path,
+        cache_dir=server_models_path,
         torch_dtype=torch.bfloat16,
         tokenizer=tokenizer,
         llamdex_padding='gaussian',
@@ -127,7 +127,7 @@ def evaluate_img(
         evidence_dim=effective_evidence_dim,
         task=task,
         text_encoder_model=text_encoder_model,
-        mistral_models_path=mistral_models_path,
+        server_models_path=server_models_path,
     )
     
     # Add expert to specified layer
@@ -300,7 +300,7 @@ def evaluate_img(
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description="Evaluate Llamdex-IMG on CIFAR-10")
     
-    parser.add_argument("--mistral_models_path", type=str, default="model/llm",
+    parser.add_argument("--server_models_path", type=str, default="/disk1/lfhu/hf_cache",
                        help="Path to backbone model cache")
     parser.add_argument("--model_name", type=str, default="Qwen/Qwen3.5-9B",
                        help="Backbone model name")
@@ -347,7 +347,7 @@ if __name__ == '__main__':
     args = parser.parse_args()
     
     evaluate_img(
-        mistral_models_path=args.mistral_models_path,
+        server_models_path=args.server_models_path,
         model_name=args.model_name,
         model_state_dict=args.model_state_dict,
         num_tokens=args.num_tokens,

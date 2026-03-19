@@ -8,6 +8,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torchvision.transforms.functional as TVF
 
+from src.multimodal.experts import build_vision_expert
+
 
 class ExpertEncoder(nn.Module):
     expert_type: str
@@ -125,6 +127,41 @@ class DINOv2ExpertEncoder(ExpertEncoder):
             if emb is None:
                 emb = out.last_hidden_state[:, 0, :]
         emb = self.adapter(emb.float())
+        if images.ndim == 5:
+            b, n = images.shape[:2]
+            emb = emb.view(b, n, -1).mean(dim=1)
+        return emb.float()
+
+
+class ResNet18ClassifierCheckpointExpertEncoder(ExpertEncoder):
+    def __init__(
+        self,
+        model_path: str,
+        output_dim: int,
+        init_weights: str = "imagenet",
+    ):
+        super().__init__()
+        if not model_path:
+            raise ValueError("resnet18_classifier expert requires model_path checkpoint.")
+        self.expert_type = "resnet18_classifier"
+        self.output_dim = int(output_dim)
+        self.model = build_vision_expert(
+            expert_kind="classifier",
+            checkpoint_path=model_path,
+            num_classes=self.output_dim,
+            init_weights=init_weights,
+        )
+        self.register_buffer("mean", torch.tensor([0.485, 0.456, 0.406]).view(1, 3, 1, 1))
+        self.register_buffer("std", torch.tensor([0.229, 0.224, 0.225]).view(1, 3, 1, 1))
+
+    def encode(self, batch: Any) -> torch.Tensor:
+        images = batch["images"] if isinstance(batch, dict) and "images" in batch else batch
+        x = _prepare_images_01(images)
+        param = next(self.model.parameters())
+        x = (x.to(device=self.mean.device, dtype=param.dtype) - self.mean.to(dtype=param.dtype)) / self.std.to(dtype=param.dtype)
+        with torch.no_grad():
+            out = self.model(x)
+            emb = out.logits
         if images.ndim == 5:
             b, n = images.shape[:2]
             emb = emb.view(b, n, -1).mean(dim=1)
@@ -336,6 +373,11 @@ class ExpertEncoderSpec:
 
 def build_expert_encoder(spec: ExpertEncoderSpec) -> ExpertEncoder:
     t = spec.expert_type.lower()
+    if t in {"resnet18_classifier", "classifier_checkpoint", "vision_classifier_checkpoint"}:
+        return ResNet18ClassifierCheckpointExpertEncoder(
+            model_path=spec.model_path,
+            output_dim=spec.output_dim,
+        )
     if t in {"clip", "siglip"}:
         return CLIPSigLIPExpertEncoder(
             expert_type=t,

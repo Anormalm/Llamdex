@@ -19,8 +19,8 @@ from src.multimodal.experts import build_vision_expert
 
 def parse_args():
     p = argparse.ArgumentParser(description="Analyze evidence vector quality (z separability) with linear probe.")
-    p.add_argument("--mistral_models_path", type=str, default="runs/hf_cache_tiny")
-    p.add_argument("--model_name", type=str, default="hf-internal-testing/tiny-random-MistralForCausalLM")
+    p.add_argument("--server_models_path", type=str, default="/disk1/lfhu/hf_cache")
+    p.add_argument("--model_name", type=str, default="Qwen/Qwen3.5-9B")
     p.add_argument("--dataset_name", type=str, default="dtd", choices=["cifar10", "cifar100", "dtd", "oxford_pet"])
     p.add_argument("--data_root", type=str, default="./data")
     p.add_argument("--evidence_source", type=str, default="vision", choices=["vision", "text"])
@@ -77,7 +77,7 @@ def _build_builder(args, device):
         builder = TextEvidenceBuilder(
             evidence_dim=args.evidence_dim,
             text_encoder_model_id=args.text_encoder_model_id,
-            cache_dir=args.mistral_models_path,
+            cache_dir=args.server_models_path,
         )
     builder = builder.to(device)
 
@@ -125,7 +125,7 @@ def _class_centroid_margin(z, y):
 def main():
     args = parse_args()
     device = torch.device(args.device if torch.cuda.is_available() and args.device.startswith("cuda") else "cpu")
-    tok = AutoTokenizer.from_pretrained(args.model_name, cache_dir=args.mistral_models_path, use_fast=False)
+    tok = AutoTokenizer.from_pretrained(args.model_name, cache_dir=args.server_models_path, use_fast=False)
     if tok.pad_token is None:
         tok.pad_token = tok.unk_token
 

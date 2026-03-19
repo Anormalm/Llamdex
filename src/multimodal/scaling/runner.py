@@ -22,7 +22,7 @@ from src.multimodal.utils.repro import set_seed
 class BackboneSpec:
     name: str
     model_name: str
-    mistral_models_path: str = "model/llm"
+    server_models_path: str = "/disk1/lfhu/hf_cache"
     enabled: bool = True
 
 
@@ -40,7 +40,7 @@ class BackboneScalingConfig:
     expert_model_path: Optional[str] = None
     expert_output_dim: int = 512
     use_runtime_detector: bool = False
-    backbone: str = "domain_mistral"
+    backbone: str = "domain_qwen"
     # Base operating point
     base_k: int = 4
     base_layer_idx: int = 0
@@ -112,14 +112,14 @@ def _greedy_generate(model, input_ids, attention_mask, max_new_tokens: int, expe
 def _build_base_model(backbone: BackboneSpec, device: torch.device):
     tokenizer = AutoTokenizer.from_pretrained(
         backbone.model_name,
-        cache_dir=backbone.mistral_models_path,
+        cache_dir=backbone.server_models_path,
         use_fast=False,
     )
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.unk_token
     model = DomainQwenForCausalLM.from_pretrained_qwen(
         backbone.model_name,
-        cache_dir=backbone.mistral_models_path,
+        cache_dir=backbone.server_models_path,
         torch_dtype=torch.bfloat16 if device.type == "cuda" else torch.float32,
         tokenizer=tokenizer,
     )
@@ -223,7 +223,7 @@ def _run_sweep_axis(
             raise ValueError(axis)
 
         run_cfg = AblationConfig(
-            mistral_models_path=backbone.mistral_models_path,
+            server_models_path=backbone.server_models_path,
             model_name=backbone.model_name,
             dataset=cfg.dataset,
             data_root=cfg.data_root,

@@ -1,0 +1,32 @@
+{
+  "title": "Hospital Text Ingestion Record",
+  "type": "object",
+  "required": [
+    "record_id",
+    "split",
+    "question",
+    "answer",
+    "label_code",
+    "label_name",
+    "description",
+    "deid_status",
+    "quality_pass"
+  ],
+  "properties": {
+    "record_id": {"type": "string"},
+    "patient_hash": {"type": "string"},
+    "study_hash": {"type": "string"},
+    "split": {"type": "string", "enum": ["train", "val", "test"]},
+    "question": {"type": "string"},
+    "answer": {"type": "string"},
+    "label_code": {"type": "string"},
+    "label_name": {"type": "string"},
+    "label_id": {"type": "integer"},
+    "description": {"type": "string"},
+    "modality": {"type": "string"},
+    "deid_status": {"type": "string", "enum": ["deidentified", "manual_review_required"]},
+    "quality_pass": {"type": "boolean"},
+    "source_dataset": {"type": "string"},
+    "notes": {"type": "string"}
+  }
+}

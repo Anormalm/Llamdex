@@ -1,0 +1,95 @@
+{
+  "version": "1.0",
+  "datasets": [
+    {
+      "name": "oxford_pet",
+      "track": "open",
+      "tasks": ["single_image", "population"],
+      "download_mode": "torchvision",
+      "source_url": "https://www.robots.ox.ac.uk/~vgg/data/pets/",
+      "license": "dataset-specific",
+      "access": "public",
+      "ingest_contract": {
+        "modality": "image",
+        "label_type": "single_label",
+        "split_policy": "trainval/test",
+        "notes": "Fine-grained pet breed classification with derived population-bag task."
+      }
+    },
+    {
+      "name": "dtd",
+      "track": "open",
+      "tasks": ["single_image", "population"],
+      "download_mode": "torchvision",
+      "source_url": "https://www.robots.ox.ac.uk/~vgg/data/dtd/",
+      "license": "dataset-specific",
+      "access": "public",
+      "ingest_contract": {
+        "modality": "image",
+        "label_type": "single_label",
+        "split_policy": "train/test",
+        "notes": "Texture classification with derived population-bag task."
+      }
+    },
+    {
+      "name": "gqa",
+      "track": "open",
+      "tasks": ["yesno", "grounded_generation"],
+      "download_mode": "manual",
+      "source_url": "https://cs.stanford.edu/people/dorarad/gqa/",
+      "license": "dataset-specific",
+      "access": "manual_registration",
+      "ingest_contract": {
+        "modality": "image_text",
+        "label_type": "qa",
+        "split_policy": "official",
+        "notes": "Use balanced split for yes/no semantic QA and grounded answer generation."
+      }
+    },
+    {
+      "name": "vqa_v2",
+      "track": "open",
+      "tasks": ["yesno"],
+      "download_mode": "manual",
+      "source_url": "https://visualqa.org/download.html",
+      "license": "dataset-specific",
+      "access": "public",
+      "ingest_contract": {
+        "modality": "image_text",
+        "label_type": "qa",
+        "split_policy": "official",
+        "notes": "Use constrained yes/no subset for semantic parity."
+      }
+    },
+    {
+      "name": "mimic_cxr_jpg",
+      "track": "medical",
+      "tasks": ["single_image", "yesno", "grounded_generation"],
+      "download_mode": "manual",
+      "source_url": "https://physionet.org/content/mimic-cxr-jpg/2.1.0/",
+      "license": "credentialed",
+      "access": "credentialed",
+      "ingest_contract": {
+        "modality": "image_text",
+        "label_type": "multi_label_derived",
+        "split_policy": "official",
+        "notes": "De-identified medical imaging path; requires credentialed access and compliance review."
+      }
+    },
+    {
+      "name": "chexpert",
+      "track": "medical",
+      "tasks": ["single_image", "yesno", "grounded_generation"],
+      "download_mode": "manual",
+      "source_url": "https://aimi.stanford.edu/datasets/chexpert-chest-x-rays",
+      "license": "credentialed",
+      "access": "manual_registration",
+      "ingest_contract": {
+        "modality": "image_text",
+        "label_type": "multi_label_derived",
+        "split_policy": "official",
+        "notes": "Medical imaging benchmark with paired report metadata depending on release variant."
+      }
+    }
+  ]
+}

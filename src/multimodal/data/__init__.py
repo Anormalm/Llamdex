@@ -5,6 +5,24 @@ from .cifar_qa import (
     collate_single_image,
 )
 from .hospital_text_qa import HospitalTextQADataset, collate_hospital_text
+from .contracts import (
+    build_label_lookup,
+    cross_validate_registry_and_freeze,
+    load_jsonl,
+    load_label_ontology,
+    load_text_privacy_policy,
+    normalize_label_record,
+    summarize_split_counts,
+    validate_dataset_registry,
+    validate_dataset_manifest,
+    validate_hospital_jsonl,
+    validate_hospital_record,
+    validate_label_ontology,
+    validate_task_matrix_freeze,
+    validate_text_privacy_jsonl,
+    validate_text_privacy_record,
+)
+from .registry import build_dataset_manifest, load_dataset_registry
 
 __all__ = [
     "CIFARSingleImageQADataset",
@@ -13,5 +31,21 @@ __all__ = [
     "collate_single_image",
     "collate_population",
     "collate_hospital_text",
+    "load_dataset_registry",
+    "build_dataset_manifest",
+    "load_jsonl",
+    "load_label_ontology",
+    "build_label_lookup",
+    "normalize_label_record",
+    "summarize_split_counts",
+    "load_text_privacy_policy",
+    "validate_label_ontology",
+    "validate_dataset_registry",
+    "cross_validate_registry_and_freeze",
+    "validate_hospital_record",
+    "validate_hospital_jsonl",
+    "validate_text_privacy_record",
+    "validate_text_privacy_jsonl",
+    "validate_dataset_manifest",
+    "validate_task_matrix_freeze",
 ]
-

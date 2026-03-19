@@ -5,18 +5,21 @@ import json
 import os
 import re
 import time
+import traceback
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 from torch.utils.data import DataLoader
+from torchvision.transforms.functional import to_pil_image
 from transformers import AutoTokenizer
 
 from src.model.DomainQwenModel import DomainQwenForCausalLM
 from src.multimodal.data.cifar_qa import (
     CIFARPopulationDataset,
     CIFARSingleImageQADataset,
+    _chat_template_to_ids,
     collate_population,
     collate_single_image,
 )
@@ -36,7 +39,7 @@ class FrozenVLMConfig:
 
 @dataclass
 class BaselineSuiteConfig:
-    mistral_models_path: str = "model/llm"
+    server_models_path: str = "/disk1/lfhu/hf_cache"
     model_name: str = "Qwen/Qwen3.5-9B"
     dataset_name: str = "dtd"
     data_root: str = "./data"
@@ -160,12 +163,12 @@ def _build_eval_loader(cfg: BaselineSuiteConfig, tokenizer):
 
 
 def _build_llm(cfg: BaselineSuiteConfig, dev: torch.device):
-    tok = AutoTokenizer.from_pretrained(cfg.model_name, cache_dir=cfg.mistral_models_path, use_fast=False)
+    tok = AutoTokenizer.from_pretrained(cfg.model_name, cache_dir=cfg.server_models_path, use_fast=False)
     if tok.pad_token is None:
         tok.pad_token = tok.unk_token
     model = DomainQwenForCausalLM.from_pretrained_qwen(
         cfg.model_name,
-        cache_dir=cfg.mistral_models_path,
+        cache_dir=cfg.server_models_path,
         torch_dtype=torch.bfloat16 if dev.type == "cuda" else torch.float32,
         tokenizer=tok,
     )
@@ -301,13 +304,14 @@ def _two_stage_caption_eval(cfg: BaselineSuiteConfig, model, tokenizer, loader, 
             imgs = batch["images"]
             prompts = []
             for i in range(imgs.size(0)):
-                pil = ((imgs[i].cpu() - imgs[i].cpu().min()) / (imgs[i].cpu().max() - imgs[i].cpu().min() + 1e-6))
+                norm = (imgs[i].cpu() - imgs[i].cpu().min()) / (imgs[i].cpu().max() - imgs[i].cpu().min() + 1e-6)
+                pil = to_pil_image(norm)
                 inputs = proc(images=pil, return_tensors="pt").to(dev)
                 out = captioner.generate(**inputs, max_new_tokens=20)
                 cap = proc.decode(out[0], skip_special_tokens=True)
                 q = batch["question_text"][i] if "question_text" in batch else "Answer with one token."
                 msgs = [{"role": "system", "content": "Follow output format strictly."}, {"role": "user", "content": f"{q}\nImage caption: {cap}"}]
-                prompts.append(tokenizer.apply_chat_template(msgs, return_tensors="pt").squeeze(0))
+                prompts.append(_chat_template_to_ids(tokenizer, msgs))
             max_len = max(x.size(0) for x in prompts)
             tok = torch.full((len(prompts), max_len), tokenizer.pad_token_id, dtype=torch.long, device=dev)
             m = torch.zeros((len(prompts), max_len), dtype=torch.long, device=dev)
@@ -385,7 +389,7 @@ def _build_rag_db(cfg: BaselineSuiteConfig, tokenizer, dev):
     with torch.no_grad():
         for i in range(len(ds)):
             row = ds[i]
-            img = row["image"].unsqueeze(0).to(dev)
+            img = row["images"].unsqueeze(0).to(dev)
             logits = expert(img).logits.float()
             probs = torch.softmax(logits, dim=-1)[0]
             top = torch.topk(probs, k=min(3, probs.numel()))
@@ -421,7 +425,7 @@ def _evaluate_rag(cfg: BaselineSuiteConfig, model, tokenizer, loader, dev):
                 q = batch["question_text"][i] if "question_text" in batch else "Answer with one token."
                 ctx = _retrieve_doc(q, docs)
                 msgs = [{"role": "system", "content": "Use retrieved evidence and answer with one token."}, {"role": "user", "content": f"{q}\nRetrieved: {ctx}"}]
-                prompts.append(tokenizer.apply_chat_template(msgs, return_tensors="pt").squeeze(0))
+                prompts.append(_chat_template_to_ids(tokenizer, msgs))
             max_len = max(x.size(0) for x in prompts)
             tok = torch.full((len(prompts), max_len), tokenizer.pad_token_id, dtype=torch.long, device=dev)
             m = torch.zeros((len(prompts), max_len), dtype=torch.long, device=dev)
@@ -464,7 +468,7 @@ def run_baseline_suite(cfg: BaselineSuiteConfig) -> List[Dict]:
         t0 = time.time()
         inj_metrics = evaluate_plan1(
             EvalPlan1Args(
-                mistral_models_path=cfg.mistral_models_path,
+                server_models_path=cfg.server_models_path,
                 model_name=cfg.model_name,
                 connectors_path=cfg.connectors_path,
                 dataset_name=cfg.dataset_name,
@@ -505,7 +509,10 @@ def run_baseline_suite(cfg: BaselineSuiteConfig) -> List[Dict]:
                     n_trainable += int(sum(v.numel() for v in st[k].values() if torch.is_tensor(v)))
         rows.append(
             {
+                "benchmark_family": "local_baseline",
                 "model_type": "injection",
+                "task": cfg.task_family,
+                "backbone": cfg.model_name,
                 "dataset": cfg.dataset_name,
                 "metric": float(inj_metrics.get("accuracy", inj_metrics.get("mae", 0.0))),
                 "metric_name": "accuracy" if "accuracy" in inj_metrics else "mae",
@@ -521,7 +528,10 @@ def run_baseline_suite(cfg: BaselineSuiteConfig) -> List[Dict]:
         met, lat = _evaluate_llm_only(cfg, model, tokenizer, loader, dev)
         rows.append(
             {
+                "benchmark_family": "local_baseline",
                 "model_type": "llm_only",
+                "task": cfg.task_family,
+                "backbone": cfg.model_name,
                 "dataset": cfg.dataset_name,
                 "metric": float(met.get("accuracy", met.get("mae", 0.0))),
                 "metric_name": "accuracy" if "accuracy" in met else "mae",
@@ -538,7 +548,10 @@ def run_baseline_suite(cfg: BaselineSuiteConfig) -> List[Dict]:
             met, lat = _two_stage_caption_eval(cfg, model, tokenizer, loader, dev)
             rows.append(
                 {
+                    "benchmark_family": "local_baseline",
                     "model_type": "two_stage_caption_llm",
+                    "task": cfg.task_family,
+                    "backbone": cfg.model_name,
                     "dataset": cfg.dataset_name,
                     "metric": float(met.get("accuracy", 0.0)),
                     "metric_name": "accuracy",
@@ -549,11 +562,10 @@ def run_baseline_suite(cfg: BaselineSuiteConfig) -> List[Dict]:
                 }
             )
         except Exception as exc:
-            rows.append({"model_type": "two_stage_caption_llm", "dataset": cfg.dataset_name, "metric": 0.0, "params_trainable": _count_trainable(model), "inference_latency": 0.0, "status": "error", "error": str(exc)})
+            rows.append({"benchmark_family": "local_baseline", "model_type": "two_stage_caption_llm", "task": cfg.task_family, "backbone": cfg.model_name, "dataset": cfg.dataset_name, "metric": 0.0, "metric_name": "accuracy", "params_trainable": _count_trainable(model), "inference_latency": 0.0, "status": "error", "error": str(exc) or repr(exc), "traceback": traceback.format_exc(limit=5)})
 
     # 3) Frozen SOTA VLMs
     vlms = cfg.frozen_vlms or [
-        FrozenVLMConfig(model_type="llava_next", model_id="llava-hf/llava-v1.6-mistral-7b-hf", enabled=True),
         FrozenVLMConfig(model_type="qwen25_vl", model_id="Qwen/Qwen2.5-VL-7B-Instruct", enabled=True),
         FrozenVLMConfig(model_type="internvl", model_id="OpenGVLab/InternVL2_5-8B", enabled=False),
     ]
@@ -564,7 +576,10 @@ def run_baseline_suite(cfg: BaselineSuiteConfig) -> List[Dict]:
             met, lat = _evaluate_frozen_vlm(cfg, loader, tokenizer, dev, v.model_type, v.model_id)
             rows.append(
                 {
+                    "benchmark_family": "local_baseline",
                     "model_type": f"frozen_vlm::{v.model_type}",
+                    "task": cfg.task_family,
+                    "backbone": cfg.model_name,
                     "dataset": cfg.dataset_name,
                     "metric": float(met.get("accuracy", 0.0)),
                     "metric_name": "accuracy",
@@ -575,7 +590,7 @@ def run_baseline_suite(cfg: BaselineSuiteConfig) -> List[Dict]:
                 }
             )
         except Exception as exc:
-            rows.append({"model_type": f"frozen_vlm::{v.model_type}", "dataset": cfg.dataset_name, "metric": 0.0, "params_trainable": 0, "inference_latency": 0.0, "status": "error", "error": str(exc)})
+            rows.append({"benchmark_family": "local_baseline", "model_type": f"frozen_vlm::{v.model_type}", "task": cfg.task_family, "backbone": cfg.model_name, "dataset": cfg.dataset_name, "metric": 0.0, "metric_name": "accuracy", "params_trainable": 0, "inference_latency": 0.0, "status": "error", "error": str(exc) or repr(exc), "traceback": traceback.format_exc(limit=5)})
 
     # 5) Optional RAG baseline
     if cfg.enable_rag:
@@ -583,7 +598,10 @@ def run_baseline_suite(cfg: BaselineSuiteConfig) -> List[Dict]:
             met, lat = _evaluate_rag(cfg, model, tokenizer, loader, dev)
             rows.append(
                 {
+                    "benchmark_family": "local_baseline",
                     "model_type": "rag_structured",
+                    "task": cfg.task_family,
+                    "backbone": cfg.model_name,
                     "dataset": cfg.dataset_name,
                     "metric": float(met.get("accuracy", 0.0)),
                     "metric_name": "accuracy",
@@ -594,7 +612,7 @@ def run_baseline_suite(cfg: BaselineSuiteConfig) -> List[Dict]:
                 }
             )
         except Exception as exc:
-            rows.append({"model_type": "rag_structured", "dataset": cfg.dataset_name, "metric": 0.0, "params_trainable": _count_trainable(model), "inference_latency": 0.0, "status": "error", "error": str(exc)})
+            rows.append({"benchmark_family": "local_baseline", "model_type": "rag_structured", "task": cfg.task_family, "backbone": cfg.model_name, "dataset": cfg.dataset_name, "metric": 0.0, "metric_name": "accuracy", "params_trainable": _count_trainable(model), "inference_latency": 0.0, "status": "error", "error": str(exc) or repr(exc), "traceback": traceback.format_exc(limit=5)})
 
     _save(rows, cfg.out_csv, cfg.out_json)
     return rows
@@ -603,6 +621,7 @@ def run_baseline_suite(cfg: BaselineSuiteConfig) -> List[Dict]:
 def load_baseline_suite_config(path: str) -> BaselineSuiteConfig:
     with open(path, "r", encoding="utf-8") as f:
         raw = json.load(f)
+    raw.pop("enable_expert_only", None)
     fv = [FrozenVLMConfig(**x) for x in raw.pop("frozen_vlms", [])]
     cfg = BaselineSuiteConfig(**raw)
     if fv:

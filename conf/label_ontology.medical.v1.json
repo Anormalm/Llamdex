@@ -1,0 +1,10 @@
+{
+  "version": "medical-v1",
+  "label_sets": {
+    "binary_clinical": [
+      {"label_id": 0, "label_code": "N", "label_name": "No"},
+      {"label_id": 1, "label_code": "Y", "label_name": "Yes"}
+    ]
+  },
+  "notes": "Medical/private track uses normalized binary codes first; richer ontologies can extend this file in later releases."
+}

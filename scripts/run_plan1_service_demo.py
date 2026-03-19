@@ -313,7 +313,7 @@ def _constrained_breed_predict(model, tokenizer, prompt_ids, prompt_mask, expert
 
 def parse_args():
     p = argparse.ArgumentParser(description="Run one full Plan-1 service-style demo and log I/O.")
-    p.add_argument("--mistral_models_path", type=str, default="runs/hf_cache")
+    p.add_argument("--server_models_path", type=str, default="/disk1/lfhu/hf_cache")
     p.add_argument("--model_name", type=str, default="Qwen/Qwen2.5-1.5B-Instruct")
     p.add_argument("--connectors_path", type=str, default=None)
     p.add_argument("--dataset_name", type=str, default="oxford_pet", choices=["oxford_pet", "hospital_text", "dtd"])
@@ -333,7 +333,7 @@ def parse_args():
     p.add_argument("--adapter_bottleneck", type=int, default=64)
     p.add_argument("--adapter_dropout", type=float, default=0.0)
     p.add_argument("--adapter_activation", type=str, default="gelu", choices=["gelu", "relu"])
-    p.add_argument("--inject_location", type=str, default="pre_ffn", choices=["layer_input", "post_attn", "pre_ffn", "post_ffn"])
+    p.add_argument("--inject_location", type=str, default="layer_input", choices=["layer_input"])
     p.add_argument("--load_in_4bit", type=int, default=0, choices=[0, 1])
     p.add_argument("--bnb_4bit_compute_dtype", type=str, default="bfloat16", choices=["bfloat16", "float16", "float32"])
     p.add_argument("--bnb_4bit_quant_type", type=str, default="nf4", choices=["nf4", "fp4"])
@@ -367,7 +367,7 @@ def main():
     device = torch.device(args.device if torch.cuda.is_available() and args.device.startswith("cuda") else "cpu")
 
     eval_args = EvalPlan1Args(
-        mistral_models_path=args.mistral_models_path,
+        server_models_path=args.server_models_path,
         model_name=args.model_name,
         connectors_path=args.connectors_path,
         dataset_name=args.dataset_name,
@@ -404,7 +404,7 @@ def main():
     expert_info = {}
     if args.baseline == "injection":
         expert, _ = _build_connectors(eval_args, model)
-        text_tok = EncoderTokenizer.from_pretrained(args.text_encoder_model_id, cache_dir=args.mistral_models_path)
+        text_tok = EncoderTokenizer.from_pretrained(args.text_encoder_model_id, cache_dir=args.server_models_path)
         enc = text_tok(
             [args.description],
             return_tensors="pt",

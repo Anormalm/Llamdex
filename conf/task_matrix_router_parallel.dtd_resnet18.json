@@ -4,18 +4,17 @@
   "data_root": "/disk1/lfhu/data",
   "seed": 42,
   "device": "cuda",
-  "learning_rate": 0.0002,
+  "learning_rate": 0.0001,
   "evidence_dim": 256,
   "num_tokens": 4,
   "layer_idx": 0,
   "alpha": 1.0,
-  "expert_type": "siglip",
-  "expert_model_id": "google/siglip-base-patch16-224",
-  "expert_output_dim": 768,
-  "use_runtime_detector": false,
+  "expert_type": "resnet18_classifier",
+  "expert_model_path": "/disk1/lfhu/runs/experts/dtd_resnet18_best.pt",
+  "expert_output_dim": 47,
   "baseline_modes": ["router_parallel"],
-  "out_csv": "/disk1/lfhu/runs/task_matrix_results.csv",
-  "out_json": "/disk1/lfhu/runs/task_matrix_results.json",
+  "out_csv": "/disk1/lfhu/runs/task_matrix_router_parallel_dtd_resnet18.csv",
+  "out_json": "/disk1/lfhu/runs/task_matrix_router_parallel_dtd_resnet18.json",
   "tasks": [
     {
       "name": "finegrained",
@@ -23,8 +22,7 @@
       "train_steps": 150,
       "max_train_samples": 1024,
       "max_eval_samples": 256,
-      "batch_size": 8,
-      "constrained_decoding": true
+      "batch_size": 8
     },
     {
       "name": "population",
@@ -33,7 +31,6 @@
       "max_train_samples": 512,
       "max_eval_samples": 128,
       "batch_size": 8,
-      "constrained_decoding": true,
       "population_group_size": 8
     },
     {
@@ -42,8 +39,7 @@
       "train_steps": 120,
       "max_train_samples": 512,
       "max_eval_samples": 128,
-      "batch_size": 4,
-      "constrained_decoding": true
+      "batch_size": 4
     }
   ]
 }

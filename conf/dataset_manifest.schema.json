@@ -1,0 +1,46 @@
+{
+  "title": "Llamdex Dataset Manifest",
+  "type": "object",
+  "required": [
+    "name",
+    "track",
+    "version",
+    "schema_version",
+    "created_at_utc",
+    "tasks",
+    "source_url",
+    "root_dir",
+    "download_status",
+    "license",
+    "access",
+    "ingest_contract",
+    "artifacts",
+    "record_count",
+    "split_counts",
+    "label_distribution",
+    "release_status"
+  ],
+  "properties": {
+    "name": {"type": "string"},
+    "track": {"type": "string"},
+    "version": {"type": "string"},
+    "schema_version": {"type": "string"},
+    "created_at_utc": {"type": "string"},
+    "tasks": {
+      "type": "array",
+      "items": {"type": "string"}
+    },
+    "source_url": {"type": "string"},
+    "root_dir": {"type": "string"},
+    "download_status": {"type": "string"},
+    "license": {"type": "string"},
+    "access": {"type": "string"},
+    "ingest_contract": {"type": "object"},
+    "artifacts": {"type": "array"},
+    "record_count": {"type": "integer"},
+    "split_counts": {"type": "object"},
+    "label_distribution": {"type": "object"},
+    "release_status": {"type": "string"},
+    "notes": {"type": "string"}
+  }
+}

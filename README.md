@@ -33,6 +33,8 @@ Main entrypoints:
 - API baseline suite: `scripts/run_api_baseline_suite.py`
 - Local baseline suite: `scripts/run_baseline_benchmark_suite.py`
 - Own-vs-API merge table: `scripts/compare_own_vs_api.py`
+- Dataset bootstrap + hospital prep: `scripts/bootstrap_datasets.py`, `scripts/prepare_hospital_dataset.py`
+- Contract/report helpers: `scripts/validate_data_contracts.py`, `scripts/generate_benchmark_report.py`
 
 ## Repository Layout
 
@@ -47,7 +49,7 @@ src/            Llamdex source code
   analysis/     Plotting, reporting, and DP evaluation utilities
   dataset/      Downloaders, metadata, and synthetic data recipes
   evaluate/     Model evaluation entry points
-  fine_tune/    LoRA fine-tuning utilities for Llama/Mistral backbones
+  fine_tune/    LoRA fine-tuning utilities for backbone adaptation
   model/        Core model definitions and expert routing modules
   preprocess/   Data cleaning, feature generation, and text synthesis scripts
   script/       Orchestrated experiment runners for training and evaluation
@@ -69,6 +71,27 @@ pip install pandas scikit-learn tqdm transformers xgboost gorilla tensorboard
 > **GPU support**: use the PyTorch wheels that match your CUDA/ROCm stack as documented on [pytorch.org](https://pytorch.org/get-started/locally/).
 
 ## Data Preparation
+
+Open-track dataset registry and release contracts live in:
+
+- `conf/datasets.registry.json`
+- `conf/dataset_manifest.schema.json`
+- `conf/task_matrix.freeze.v1.json`
+- `conf/text_privacy_mode.v1.json`
+
+Hospital/private text releases should be normalized first:
+
+```bash
+python scripts/prepare_hospital_dataset.py \
+  --input_path /path/to/raw_records.jsonl \
+  --output_jsonl runs/hospital_release/normalized.jsonl \
+  --manifest_out runs/hospital_release/manifest.v1.json \
+  --rejects_out runs/hospital_release/rejects.json
+
+python scripts/validate_data_contracts.py \
+  --hospital_jsonl runs/hospital_release/normalized.jsonl \
+  --dataset_manifest runs/hospital_release/manifest.v1.json
+```
 
 Download raw datasets using the scripts in `src/dataset`:
 
@@ -124,8 +147,8 @@ pip install torchvision
 2. **Train on CIFAR-10**:
 ```bash
 python scripts/train_img.py \
-    --mistral_models_path model/llm \
-    --model_name mistralai/Mistral-7B-Instruct-v0.3 \
+    --server_models_path /disk1/lfhu/hf_cache \
+    --model_name Qwen/Qwen3.5-9B \
     --num_tokens 10 \
     --layer 0 \
     --num_epochs 3 \
@@ -236,8 +259,8 @@ We added a benchmark runner for three more meaningful task tracks:
 Run:
 ```bash
 python scripts/benchmark_meaningful_v1.py \
-  --mistral_models_path runs/hf_cache_tiny \
-  --model_name hf-internal-testing/tiny-random-MistralForCausalLM \
+  --server_models_path /disk1/lfhu/hf_cache \
+  --model_name Qwen/Qwen3.5-9B \
   --dataset_name dtd \
   --data_root ./data \
   --expert_checkpoint /path/to/dtd_resnet18_best.pt \
@@ -547,7 +570,7 @@ To avoid random-head artifacts, the runs below use dataset-matched expert checkp
 - Oxford-IIIT Pet expert: `runs/experts/oxford_pet_resnet18_best.pt`
 
 Settings:
-- model: `hf-internal-testing/tiny-random-MistralForCausalLM`
+- model: `Qwen/Qwen3.5-9B`
 - adapters: `use_adapters=1`, `adapter_bottleneck=64`, `tune_layernorm=0`
 - grid: `num_tokens in {4,8,16}`, `inject_location in {post_attn, pre_ffn, post_ffn}`
 - budget: `max_train_samples=256`, `max_eval_samples=256`
@@ -602,7 +625,7 @@ python -m pytest -q tests/test_plan1_smoke.py tests/test_tabular_pipeline_smoke.
 Evaluation setup:
 - Task: `single_image`, `qa_type=label`
 - Dataset: CIFAR-10 (`max_eval_samples=1000`)
-- Model: `hf-internal-testing/tiny-random-MistralForCausalLM`
+- Model: `Qwen/Qwen3.5-9B`
 - Expert checkpoint: `runs/experts/cifar10_resnet18_best.pt`
 - Device: `cuda`
 - Batch size: `16`
@@ -681,15 +704,14 @@ Current runtime path:
 Current implementation status:
 - Frozen backbone LLM + frozen client experts are preserved.
 - Trainable scope: evidence connector modules, projector, and optional Houlsby adapters.
-- Explicit injection-point control is implemented:
-  - `layer_input | post_attn | pre_ffn | post_ffn`
+- Public injection surface is narrowed to adapter-style `layer_input` plus router-parallel fusion.
 - Checkpoint compatibility guard is implemented in eval (`--enforce_checkpoint_compat 1`) to block mismatched task/checkpoint runs that previously caused collapsed metrics.
 - `llm_only` scoring for yes/no baselines is semantic (not strict token-id only), so floor baselines are meaningful.
 
 ### Local matched-protocol benchmark (repeat-2)
 
 Setup:
-- backbone: `hf-internal-testing/tiny-random-MistralForCausalLM`
+- backbone: `Qwen/Qwen3.5-9B`
 - repeats: `2` (`seed=42`, `seed=1042`)
 - eval budget: `64`
 - protocol: task-matched checkpoint + args
@@ -702,10 +724,8 @@ Results:
 | Dataset | Model | Accuracy Mean | Accuracy CI95 | Latency Mean (s/sample) |
 |---|---|---:|---:|---:|
 | DTD | `injection` | 0.781250 | 0.000000 | 0.054981 |
-| DTD | `expert_only` | 0.031250 | 0.000000 | 0.015018 |
 | DTD | `llm_only` | 0.000000 | 0.000000 | 0.005328 |
 | Oxford-IIIT Pet | `injection` | 0.890625 | 0.000000 | 0.060251 |
-| Oxford-IIIT Pet | `expert_only` | 0.093750 | 0.000000 | 0.014535 |
 | Oxford-IIIT Pet | `llm_only` | 0.000000 | 0.000000 | 0.005291 |
 
 ### Semantic llm_only benchmark (yes/no floor)
@@ -784,5 +804,3 @@ If you use Llamdex in your research, please cite:
 ## License
 
 This release is distributed under the [Apache License 2.0](LICENSE). By contributing or using the software, you agree to the terms of that license.
-
-

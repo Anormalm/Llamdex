@@ -142,24 +142,31 @@ class VQASubsetDataset(Dataset):
         }
 
 
-class FineGrainedPetDataset(Dataset):
-    def __init__(self, root: str, tokenizer, train: bool, max_samples: Optional[int] = None):
-        self.tokenizer = tokenizer
+def _build_image_dataset(root: str, dataset_name: str, train: bool):
+    tx = transforms.Compose(
+        [
+            transforms.Resize((224, 224)),
+            transforms.ToTensor(),
+            transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
+        ]
+    )
+    name = str(dataset_name).strip().lower()
+    if name == "oxford_pet":
         split = "trainval" if train else "test"
-        self.ds = datasets.OxfordIIITPet(
-            root=root,
-            split=split,
-            target_types="category",
-            download=True,
-            transform=transforms.Compose(
-                [
-                    transforms.Resize((224, 224)),
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
-                ]
-            ),
-        )
-        self.class_names = list(self.ds.classes)
+        ds = datasets.OxfordIIITPet(root=root, split=split, target_types="category", download=True, transform=tx)
+        return ds, list(ds.classes), "pet breed"
+    if name == "dtd":
+        split = "train" if train else "test"
+        ds = datasets.DTD(root=root, split=split, download=True, transform=tx)
+        return ds, list(ds.classes), "texture class"
+    raise ValueError(f"Unsupported image dataset for task matrix: {dataset_name}")
+
+
+class FineGrainedPetDataset(Dataset):
+    def __init__(self, root: str, tokenizer, train: bool, max_samples: Optional[int] = None, dataset_name: str = "oxford_pet"):
+        self.tokenizer = tokenizer
+        self.dataset_name = dataset_name
+        self.ds, self.class_names, self.task_label = _build_image_dataset(root=root, dataset_name=dataset_name, train=train)
         self.codes, self.code_to_tid = _build_codebook(tokenizer, len(self.class_names))
         self.indices = list(range(len(self.ds)))
         if max_samples is not None:
@@ -172,7 +179,7 @@ class FineGrainedPetDataset(Dataset):
         i = self.indices[idx]
         image, label = self.ds[i]
         mapping = ", ".join([f"{self.codes[i]}={name}" for i, name in enumerate(self.class_names)])
-        prompt = f"Classify this pet image. Answer with one code only. Codes: {mapping}."
+        prompt = f"Classify this {self.task_label}. Answer with one code only. Codes: {mapping}."
         msgs = [{"role": "system", "content": "Answer with one code only."}, {"role": "user", "content": prompt}]
         tok = _chat_template_tokens(self.tokenizer, msgs)
         mask = (tok != self.tokenizer.pad_token_id).long()
@@ -195,28 +202,16 @@ class PopulationBagDataset(Dataset):
         root: str,
         tokenizer,
         train: bool,
+        dataset_name: str = "oxford_pet",
         group_size: int = 8,
         max_groups: Optional[int] = 256,
         seed: int = 42,
     ):
         self.tokenizer = tokenizer
+        self.dataset_name = dataset_name
         self.group_size = group_size
         self.rng = random.Random(seed)
-        split = "trainval" if train else "test"
-        self.ds = datasets.OxfordIIITPet(
-            root=root,
-            split=split,
-            target_types="category",
-            download=True,
-            transform=transforms.Compose(
-                [
-                    transforms.Resize((224, 224)),
-                    transforms.ToTensor(),
-                    transforms.Normalize((0.485, 0.456, 0.406), (0.229, 0.224, 0.225)),
-                ]
-            ),
-        )
-        self.class_names = list(self.ds.classes)
+        self.ds, self.class_names, self.task_label = _build_image_dataset(root=root, dataset_name=dataset_name, train=train)
         self.n = len(self.ds) // group_size if max_groups is None else max_groups
 
     def __len__(self):
@@ -255,7 +250,7 @@ class GroundedGenerationDataset(FineGrainedPetDataset):
         row = super().__getitem__(idx)
         label_words = row["rationale_keywords"]
         prompt = (
-            f"Identify the pet breed. First output one code token. Then output one short rationale sentence.\n"
+            f"Identify the correct {self.task_label}. First output one code token. Then output one short rationale sentence.\n"
             f"Format: Answer: <code>. Rationale: <short sentence>."
         )
         msgs = [{"role": "system", "content": "Follow format strictly."}, {"role": "user", "content": prompt}]
@@ -268,8 +263,8 @@ class GroundedGenerationDataset(FineGrainedPetDataset):
 
 
 class StrictYesNoPetDataset(FineGrainedPetDataset):
-    def __init__(self, root: str, tokenizer, train: bool, max_samples: Optional[int] = None, seed: int = 42):
-        super().__init__(root=root, tokenizer=tokenizer, train=train, max_samples=max_samples)
+    def __init__(self, root: str, tokenizer, train: bool, max_samples: Optional[int] = None, seed: int = 42, dataset_name: str = "oxford_pet"):
+        super().__init__(root=root, tokenizer=tokenizer, train=train, max_samples=max_samples, dataset_name=dataset_name)
         self.rng = random.Random(seed)
         self.yes_id = _token_id_for_word(tokenizer, "Yes")
         self.no_id = _token_id_for_word(tokenizer, "No")

@@ -535,7 +535,7 @@ def _eval_with_repeats(
 def run_api_baseline_suite(cfg: APIBaselineSuiteConfig) -> List[Dict]:
     set_seed(cfg.seed)
     tokenizer = AutoTokenizer.from_pretrained(
-        "hf-internal-testing/tiny-random-MistralForCausalLM",
+        "Qwen/Qwen3.5-9B",
         cache_dir=cfg.hf_cache_dir,
         use_fast=False,
     )

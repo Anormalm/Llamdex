@@ -1,0 +1,34 @@
+{
+  "version": "task-matrix-v1",
+  "tracks": {
+    "open": {
+      "datasets": ["oxford_pet", "dtd", "gqa", "vqa_v2"],
+      "tasks": {
+        "single_image": ["oxford_pet", "dtd"],
+        "yesno": ["gqa", "vqa_v2"],
+        "population": ["oxford_pet", "dtd"],
+        "grounded_generation": ["gqa"]
+      }
+    },
+    "medical": {
+      "datasets": ["mimic_cxr_jpg", "chexpert"],
+      "tasks": {
+        "single_image": ["mimic_cxr_jpg", "chexpert"],
+        "yesno": ["mimic_cxr_jpg", "chexpert"],
+        "grounded_generation": ["mimic_cxr_jpg", "chexpert"]
+      }
+    }
+  },
+  "output_contract": {
+    "single_image": "label_code",
+    "yesno": "Yes/No",
+    "population": "0..10 integer bin",
+    "grounded_generation": "Answer + rationale template"
+  },
+  "metrics": {
+    "single_image": ["accuracy", "f1"],
+    "yesno": ["accuracy", "f1"],
+    "population": ["accuracy", "mae", "calibration_error"],
+    "grounded_generation": ["accuracy", "f1", "format_compliance", "rationale_consistency", "rationale_nonempty_rate"]
+  }
+}

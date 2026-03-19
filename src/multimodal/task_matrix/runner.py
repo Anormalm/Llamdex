@@ -49,6 +49,7 @@ BASELINE_MODES = {"llm_only", "text_prompt_only", "overwrite", "router_parallel"
 @dataclass
 class TaskSpec:
     name: str  # vqa|finegrained|population|grounded_generation
+    image_dataset_name: str = "oxford_pet"
     train_steps: int = 100
     max_train_samples: int = 512
     max_eval_samples: int = 256
@@ -79,13 +80,13 @@ class TaskMatrixConfig:
     num_tokens: int = 4
     layer_idx: int = 0
     alpha: float = 1.0
-    expert_type: str = "clip"
+    expert_type: str = "siglip"
     expert_model_id: Optional[str] = None
     expert_model_path: Optional[str] = None
     expert_output_dim: int = 512
     use_runtime_detector: bool = False
-    fusion_policy: str = "pre_attn_overwrite"  # pre_attn_overwrite|post_attn_router_parallel
-    baseline_modes: List[str] = field(default_factory=lambda: ["overwrite"])
+    fusion_policy: str = "post_attn_router_parallel"  # pre_attn_overwrite|post_attn_router_parallel
+    baseline_modes: List[str] = field(default_factory=lambda: ["router_parallel"])
     save_bundle_dir: Optional[str] = None
     load_bundle_dir: Optional[str] = None
     label_schema: Optional[Dict[str, object]] = None
@@ -107,7 +108,7 @@ def _normalize_baseline_modes(modes: List[str]) -> List[str]:
         "post_attn_router_parallel": "router_parallel",
     }
     out = []
-    for raw in modes or ["overwrite"]:
+    for raw in modes or ["router_parallel"]:
         mode = aliases.get(str(raw).strip().lower(), str(raw).strip().lower())
         if mode == "expert_only":
             raise ValueError("expert_only baseline has been removed; use llm_only, text_prompt_only, overwrite, or router_parallel.")
@@ -123,7 +124,7 @@ def _fusion_policy_for_mode(mode: str) -> str:
         return "pre_attn_overwrite"
     if mode == "router_parallel":
         return "post_attn_router_parallel"
-    return "pre_attn_overwrite"
+    return "post_attn_router_parallel"
 
 
 def _build_model_tokenizer(cfg: TaskMatrixConfig):
@@ -231,13 +232,26 @@ def _build_task_loaders(task: TaskSpec, tokenizer, data_root: str, seed: int):
         train_ds = VQASubsetDataset(tokenizer=tokenizer, spec=spec, max_samples=task.max_train_samples, seed=seed)
         eval_ds = VQASubsetDataset(tokenizer=tokenizer, spec=spec, max_samples=task.max_eval_samples, seed=seed + 1)
     elif task.name == "finegrained":
-        train_ds = FineGrainedPetDataset(root=data_root, tokenizer=tokenizer, train=True, max_samples=task.max_train_samples)
-        eval_ds = FineGrainedPetDataset(root=data_root, tokenizer=tokenizer, train=False, max_samples=task.max_eval_samples)
+        train_ds = FineGrainedPetDataset(
+            root=data_root,
+            tokenizer=tokenizer,
+            train=True,
+            max_samples=task.max_train_samples,
+            dataset_name=task.image_dataset_name,
+        )
+        eval_ds = FineGrainedPetDataset(
+            root=data_root,
+            tokenizer=tokenizer,
+            train=False,
+            max_samples=task.max_eval_samples,
+            dataset_name=task.image_dataset_name,
+        )
     elif task.name == "population":
         train_ds = PopulationBagDataset(
             root=data_root,
             tokenizer=tokenizer,
             train=True,
+            dataset_name=task.image_dataset_name,
             group_size=task.population_group_size,
             max_groups=task.max_train_samples,
             seed=seed,
@@ -246,19 +260,42 @@ def _build_task_loaders(task: TaskSpec, tokenizer, data_root: str, seed: int):
             root=data_root,
             tokenizer=tokenizer,
             train=False,
+            dataset_name=task.image_dataset_name,
             group_size=task.population_group_size,
             max_groups=task.max_eval_samples,
             seed=seed + 1,
         )
     elif task.name == "grounded_generation":
-        train_ds = GroundedGenerationDataset(root=data_root, tokenizer=tokenizer, train=True, max_samples=task.max_train_samples)
-        eval_ds = GroundedGenerationDataset(root=data_root, tokenizer=tokenizer, train=False, max_samples=task.max_eval_samples)
+        train_ds = GroundedGenerationDataset(
+            root=data_root,
+            tokenizer=tokenizer,
+            train=True,
+            max_samples=task.max_train_samples,
+            dataset_name=task.image_dataset_name,
+        )
+        eval_ds = GroundedGenerationDataset(
+            root=data_root,
+            tokenizer=tokenizer,
+            train=False,
+            max_samples=task.max_eval_samples,
+            dataset_name=task.image_dataset_name,
+        )
     elif task.name == "strict_yesno":
         train_ds = StrictYesNoPetDataset(
-            root=data_root, tokenizer=tokenizer, train=True, max_samples=task.max_train_samples, seed=seed
+            root=data_root,
+            tokenizer=tokenizer,
+            train=True,
+            max_samples=task.max_train_samples,
+            seed=seed,
+            dataset_name=task.image_dataset_name,
         )
         eval_ds = StrictYesNoPetDataset(
-            root=data_root, tokenizer=tokenizer, train=False, max_samples=task.max_eval_samples, seed=seed + 1
+            root=data_root,
+            tokenizer=tokenizer,
+            train=False,
+            max_samples=task.max_eval_samples,
+            seed=seed + 1,
+            dataset_name=task.image_dataset_name,
         )
     else:
         raise ValueError(f"Unsupported task name: {task.name}")

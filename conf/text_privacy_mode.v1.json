@@ -1,0 +1,27 @@
+{
+  "version": "text-privacy-v1",
+  "allowed_input_fields": ["description", "question"],
+  "forbidden_input_fields": [
+    "image",
+    "images",
+    "pixel_values",
+    "raw_report",
+    "report_path",
+    "dicom_path"
+  ],
+  "required_record_fields": [
+    "record_id",
+    "split",
+    "question",
+    "answer",
+    "label_code",
+    "label_name",
+    "description",
+    "deid_status",
+    "quality_pass"
+  ],
+  "require_deidentified": true,
+  "require_quality_pass": true,
+  "description_min_chars": 24,
+  "notes": "Strict text-first privacy mode. Server-side training/eval may consume sanitized descriptions plus task question only."
+}

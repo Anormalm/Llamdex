@@ -31,7 +31,7 @@ from src.multimodal.utils.repro import set_seed
 
 @dataclass
 class AblationConfig:
-    mistral_models_path: str = "model/llm"
+    server_models_path: str = "/disk1/lfhu/hf_cache"
     model_name: str = "Qwen/Qwen3.5-9B"
     dataset: str = "dtd"
     data_root: str = "./data"
@@ -44,7 +44,7 @@ class AblationConfig:
     expert_model_path: Optional[str] = None
     expert_output_dim: int = 512
     use_runtime_detector: bool = False
-    backbone: str = "domain_mistral"
+    backbone: str = "domain_qwen"
     k: int = 4
     layer_idx: int = 0
     evidence_dim: int = 256
@@ -67,7 +67,7 @@ def _device(device: str):
 def _build_model_tokenizer(cfg: AblationConfig):
     tokenizer = AutoTokenizer.from_pretrained(
         cfg.model_name,
-        cache_dir=cfg.mistral_models_path,
+        cache_dir=cfg.server_models_path,
         torch_dtype=torch.bfloat16,
         use_fast=False,
     )
@@ -75,7 +75,7 @@ def _build_model_tokenizer(cfg: AblationConfig):
         tokenizer.pad_token = tokenizer.unk_token
     model = DomainQwenForCausalLM.from_pretrained_qwen(
         cfg.model_name,
-        cache_dir=cfg.mistral_models_path,
+        cache_dir=cfg.server_models_path,
         torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
         tokenizer=tokenizer,
     )
@@ -205,7 +205,7 @@ def run_single_experiment(cfg: AblationConfig) -> Dict[str, float]:
             model_id=cfg.expert_model_id,
             model_path=cfg.expert_model_path,
             output_dim=cfg.expert_output_dim,
-            cache_dir=cfg.mistral_models_path,
+            cache_dir=cfg.server_models_path,
             use_runtime_detector=cfg.use_runtime_detector,
         )
     )

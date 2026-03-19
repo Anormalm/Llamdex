@@ -8,7 +8,6 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 def parse_args():
     p = argparse.ArgumentParser(description="Plan 1: train semantic evidence injection connectors")
     p.add_argument("--server_models_path", type=str, default="/disk1/lfhu/hf_cache")
-    p.add_argument("--mistral_models_path", type=str, default=None, help="Legacy alias for --server_models_path.")
     p.add_argument("--model_name", type=str, default="Qwen/Qwen3.5-9B")
     p.add_argument("--run_dir", type=str, required=True)
     p.add_argument("--dataset_name", type=str, default="dtd", choices=["cifar10", "cifar100", "dtd", "oxford_pet", "hospital_text"])
@@ -59,8 +58,6 @@ def parse_args():
 
 if __name__ == "__main__":
     a = parse_args()
-    if a.mistral_models_path:
-        a.server_models_path = a.mistral_models_path
     from src.multimodal.trainers.plan1_trainer import TrainPlan1Args, train_plan1
 
     args = TrainPlan1Args(

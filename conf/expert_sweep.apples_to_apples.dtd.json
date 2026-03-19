@@ -1,0 +1,31 @@
+{
+  "base_config": "conf/task_matrix_router_parallel.dtd_resnet18.json",
+  "experts": [
+    {
+      "name": "resnet18_classifier",
+      "expert_type": "resnet18_classifier",
+      "expert_model_path": "/disk1/lfhu/runs/experts/dtd_resnet18_best.pt",
+      "expert_output_dim": 47
+    },
+    {
+      "name": "siglip",
+      "expert_type": "siglip",
+      "expert_model_id": "google/siglip-base-patch16-224",
+      "expert_output_dim": 768
+    },
+    {
+      "name": "dinov2",
+      "expert_type": "dinov2",
+      "expert_model_id": "facebook/dinov2-base",
+      "expert_output_dim": 768
+    },
+    {
+      "name": "clip",
+      "expert_type": "clip",
+      "expert_model_id": "openai/clip-vit-base-patch32",
+      "expert_output_dim": 512
+    }
+  ],
+  "out_csv": "/disk1/lfhu/runs/expert_sweep.apples_to_apples.dtd.csv",
+  "out_json": "/disk1/lfhu/runs/expert_sweep.apples_to_apples.dtd.json"
+}
