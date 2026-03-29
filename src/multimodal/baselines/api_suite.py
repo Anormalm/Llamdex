@@ -306,6 +306,9 @@ def _eval_api_model(
         for i in range(bs):
             question = batch["question_text"][i] if "question_text" in batch else "Answer with one token."
             img = batch["images"][i]
+            if isinstance(img, torch.Tensor) and img.ndim == 4:
+                # Population batches provide a group of images; send the first image as visual context.
+                img = img[0]
             img_b64 = _prepare_image_for_api(img)
 
             answer_rule = _strict_answer_instruction(cfg.task_family, qa_mode, ds)
@@ -502,8 +505,8 @@ def _eval_with_repeats(
                     "dataset": dataset_name,
                     "repeat_idx": rep,
                     "seed": rep_seed,
-                    "metric": float(met.get("accuracy", met.get("mae", 0.0))),
-                    "metric_name": "accuracy" if "accuracy" in met else "mae",
+                    "metric": float(met.get("mae", met.get("accuracy", 0.0))) if cfg.task_family == "population" else float(met.get("accuracy", met.get("mae", 0.0))),
+                    "metric_name": "mae" if cfg.task_family == "population" else "accuracy",
                     "params_trainable": 0,
                     "inference_latency": float(lat),
                     **met,

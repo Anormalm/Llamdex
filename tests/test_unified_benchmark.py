@@ -35,3 +35,4 @@ def test_unified_benchmark_merges_sources(monkeypatch, tmp_path):
     assert rows[0]["benchmark_family"] == "llamdex"
     assert rows[1]["benchmark_family"] == "architecture"
     assert rows[2]["benchmark_family"] == "api"
+    assert rows[0]["metric_value"] == 0.7

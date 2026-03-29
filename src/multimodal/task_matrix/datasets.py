@@ -159,6 +159,9 @@ def _build_image_dataset(root: str, dataset_name: str, train: bool):
         split = "train" if train else "test"
         ds = datasets.DTD(root=root, split=split, download=True, transform=tx)
         return ds, list(ds.classes), "texture class"
+    if name == "cifar10":
+        ds = datasets.CIFAR10(root=root, train=train, download=True, transform=tx)
+        return ds, list(ds.classes), "object class"
     raise ValueError(f"Unsupported image dataset for task matrix: {dataset_name}")
 
 
@@ -249,11 +252,17 @@ class GroundedGenerationDataset(FineGrainedPetDataset):
     def __getitem__(self, idx):
         row = super().__getitem__(idx)
         label_words = row["rationale_keywords"]
+        mapping = ", ".join([f"{self.codes[i]}={name}" for i, name in enumerate(self.class_names)])
         prompt = (
-            f"Identify the correct {self.task_label}. First output one code token. Then output one short rationale sentence.\n"
-            f"Format: Answer: <code>. Rationale: <short sentence>."
+            f"Identify the correct {self.task_label}. Answer with one code from the mapping. "
+            "Then write one short rationale sentence that includes words from the chosen class name.\n"
+            f"Codes: {mapping}\n"
+            "Format: Answer: <code>. Rationale: <short sentence with class words>."
         )
-        msgs = [{"role": "system", "content": "Follow format strictly."}, {"role": "user", "content": prompt}]
+        msgs = [
+            {"role": "system", "content": "Follow format strictly. Include class words in the rationale."},
+            {"role": "user", "content": prompt},
+        ]
         tok = _chat_template_tokens(self.tokenizer, msgs)
         row["prompt_tokens"] = tok
         row["prompt_mask"] = (tok != self.tokenizer.pad_token_id).long()

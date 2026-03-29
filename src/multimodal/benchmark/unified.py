@@ -4,6 +4,7 @@ import csv
 import json
 import os
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Dict, List, Optional
 
 from src.multimodal.baselines.api_suite import load_api_baseline_config, run_api_baseline_suite
@@ -43,29 +44,58 @@ def _metric_name(row: Dict) -> str:
     return "accuracy"
 
 
+def _metric_value(row: Dict) -> float:
+    if "metric" in row and isinstance(row.get("metric"), (int, float)):
+        return float(row["metric"])
+    metric_name = _metric_name(row)
+    v = row.get(metric_name, 0.0)
+    return float(v) if isinstance(v, (int, float)) else 0.0
+
+
+def _canonical_row(row: Dict, *, benchmark_family: str, benchmark_source: str, baseline_name: str, task: str, dataset: str, backbone: str, fusion_policy, bundle_id, layer_idx, k, evidence_dim):
+    metric_name = _metric_name(row)
+    metric_value = _metric_value(row)
+    return {
+        "benchmark_family": benchmark_family,
+        "benchmark_source": benchmark_source,
+        "baseline_name": baseline_name,
+        "task": task,
+        "dataset": dataset,
+        "backbone": backbone,
+        "fusion_policy": fusion_policy,
+        "bundle_id": bundle_id,
+        "layer_idx": layer_idx,
+        "k": k,
+        "evidence_dim": evidence_dim,
+        "metric": metric_value,
+        "metric_name": metric_name,
+        "metric_value": metric_value,
+        "status": row.get("status", "ok"),
+        "timestamp_utc": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        **row,
+    }
+
+
 def _normalize_task_matrix_rows(rows: List[Dict]) -> List[Dict]:
     out = []
     for row in rows:
         mode = str(row.get("baseline_mode", "unknown"))
         family = "llamdex" if mode in {"overwrite", "router_parallel"} else "architecture"
         out.append(
-            {
-                "benchmark_family": family,
-                "benchmark_source": "task_matrix",
-                "baseline_name": mode,
-                "task": row.get("task"),
-                "dataset": row.get("dataset"),
-                "backbone": row.get("backbone"),
-                "fusion_policy": row.get("fusion_policy"),
-                "bundle_id": row.get("bundle_id"),
-                "layer_idx": row.get("layer_idx"),
-                "k": row.get("k"),
-                "evidence_dim": row.get("evidence_dim"),
-                "metric": row.get("metric", 0.0),
-                "metric_name": _metric_name(row),
-                "status": row.get("status", "ok"),
-                **row,
-            }
+            _canonical_row(
+                row,
+                benchmark_family=family,
+                benchmark_source="task_matrix",
+                baseline_name=mode,
+                task=row.get("task"),
+                dataset=row.get("dataset"),
+                backbone=row.get("backbone"),
+                fusion_policy=row.get("fusion_policy"),
+                bundle_id=row.get("bundle_id"),
+                layer_idx=row.get("layer_idx"),
+                k=row.get("k"),
+                evidence_dim=row.get("evidence_dim"),
+            )
         )
     return out
 
@@ -74,23 +104,20 @@ def _normalize_local_suite_rows(rows: List[Dict]) -> List[Dict]:
     out = []
     for row in rows:
         out.append(
-            {
-                "benchmark_family": "architecture",
-                "benchmark_source": "local_suite",
-                "baseline_name": row.get("model_type"),
-                "task": row.get("task"),
-                "dataset": row.get("dataset"),
-                "backbone": row.get("backbone"),
-                "fusion_policy": row.get("fusion_policy"),
-                "bundle_id": row.get("bundle_id"),
-                "layer_idx": row.get("layer_idx"),
-                "k": row.get("k"),
-                "evidence_dim": row.get("evidence_dim"),
-                "metric": row.get("metric", 0.0),
-                "metric_name": _metric_name(row),
-                "status": row.get("status", "ok"),
-                **row,
-            }
+            _canonical_row(
+                row,
+                benchmark_family="architecture",
+                benchmark_source="local_suite",
+                baseline_name=row.get("model_type"),
+                task=row.get("task"),
+                dataset=row.get("dataset"),
+                backbone=row.get("backbone"),
+                fusion_policy=row.get("fusion_policy"),
+                bundle_id=row.get("bundle_id"),
+                layer_idx=row.get("layer_idx"),
+                k=row.get("k"),
+                evidence_dim=row.get("evidence_dim"),
+            )
         )
     return out
 
@@ -99,23 +126,20 @@ def _normalize_api_rows(rows: List[Dict]) -> List[Dict]:
     out = []
     for row in rows:
         out.append(
-            {
-                "benchmark_family": "api",
-                "benchmark_source": "api_suite",
-                "baseline_name": row.get("model_type"),
-                "task": row.get("task_family"),
-                "dataset": row.get("dataset"),
-                "backbone": row.get("model_id"),
-                "fusion_policy": None,
-                "bundle_id": None,
-                "layer_idx": None,
-                "k": 0,
-                "evidence_dim": 0,
-                "metric": row.get("metric", 0.0),
-                "metric_name": _metric_name(row),
-                "status": row.get("status", "ok"),
-                **row,
-            }
+            _canonical_row(
+                row,
+                benchmark_family="api",
+                benchmark_source="api_suite",
+                baseline_name=row.get("model_type"),
+                task=row.get("task_family"),
+                dataset=row.get("dataset"),
+                backbone=row.get("model_id"),
+                fusion_policy=None,
+                bundle_id=None,
+                layer_idx=None,
+                k=0,
+                evidence_dim=0,
+            )
         )
     return out
 

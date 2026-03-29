@@ -102,10 +102,92 @@ class PostAttnRouterParallelPolicy(BaseFusionPolicy):
         return fused_logits
 
 
+class PreFFNRouterParallelPolicy(BaseFusionPolicy):
+    """
+    Evidence-conditioned trainable branch added in parallel to frozen FFN output.
+    This is applied via a forward hook on target layer.mlp output.
+    """
+
+    policy_name = "pre_ffn_router_parallel"
+
+    def __init__(self, hidden_size: int):
+        super().__init__()
+        self.hidden_size = int(hidden_size)
+        self.expert_in = nn.Linear(self.hidden_size * 2, self.hidden_size * 2)
+        self.expert_mid = nn.Linear(self.hidden_size * 2, self.hidden_size * 2)
+        self.expert_out = nn.Linear(self.hidden_size * 2, self.hidden_size)
+        self.gate = nn.Linear(self.hidden_size * 2, 1)
+        self.channel_gate = nn.Linear(self.hidden_size * 2, self.hidden_size)
+        nn.init.zeros_(self.expert_out.weight)
+        nn.init.zeros_(self.expert_out.bias)
+
+        self._z_ctx: Optional[torch.Tensor] = None
+        self._hook_handle = None
+        self._layer_idx: Optional[int] = None
+
+    def register_to_model(self, model, layer_idx: int):
+        if self._hook_handle is not None:
+            self._hook_handle.remove()
+            self._hook_handle = None
+        self._layer_idx = int(layer_idx)
+        layer = model.model.layers[self._layer_idx]
+        self._hook_handle = layer.mlp.register_forward_hook(self._mlp_out_hook)
+
+    def clear_hook(self):
+        if self._hook_handle is not None:
+            self._hook_handle.remove()
+            self._hook_handle = None
+        self._layer_idx = None
+
+    def set_context(self, z_ctx: Optional[torch.Tensor]):
+        self._z_ctx = z_ctx
+
+    def clear_context(self):
+        self._z_ctx = None
+
+    def _mlp_out_hook(self, module, inputs, output):
+        _ = module
+        if self._z_ctx is None:
+            return output
+        if not isinstance(inputs, (tuple, list)) or len(inputs) == 0:
+            return output
+        u = inputs[0]  # pre-ffn hidden after post-attn layernorm, [B, T, d]
+        if u is None or output is None:
+            return output
+
+        z = self._z_ctx
+        if z.dim() == 2:
+            z = z.unsqueeze(1).expand(-1, u.size(1), -1)
+        z = z.to(dtype=u.dtype, device=u.device)
+
+        x = torch.cat([u, z], dim=-1)
+        h_exp = self.expert_out(F.gelu(self.expert_mid(F.gelu(self.expert_in(x)))))
+        g = torch.sigmoid(self.gate(x))
+        c = torch.sigmoid(self.channel_gate(x))
+        delta = g * (c * h_exp)
+        return output + delta.to(dtype=output.dtype, device=output.device)
+
+    def forward_logits(
+        self,
+        *,
+        model,
+        outputs,
+        logits: torch.Tensor,
+        z_ctx: Optional[torch.Tensor],
+        ctx: FusionContext,
+    ) -> torch.Tensor:
+        _ = (model, outputs, z_ctx, ctx)
+        # Fusion is applied in-layer through the hook; logits are already fused.
+        return logits
+
+
+
 def build_fusion_policy(name: str, hidden_size: int) -> BaseFusionPolicy:
     n = str(name).strip().lower()
     if n == "pre_attn_overwrite":
         return PreAttnOverwritePolicy()
     if n == "post_attn_router_parallel":
         return PostAttnRouterParallelPolicy(hidden_size=hidden_size)
+    if n == "pre_ffn_router_parallel":
+        return PreFFNRouterParallelPolicy(hidden_size=hidden_size)
     raise ValueError(f"Unsupported fusion_policy: {name}")

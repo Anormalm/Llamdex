@@ -23,5 +23,13 @@
   "require_deidentified": true,
   "require_quality_pass": true,
   "description_min_chars": 24,
+  "description_min_alpha_ratio": 0.5,
+  "description_min_unique_tokens": 4,
+  "pii_patterns": {
+    "email": "[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\\.[A-Za-z]{2,}",
+    "phone": "\\b(?:\\+?\\d[\\d\\s()\\-]{7,}\\d)\\b",
+    "ssn": "\\b\\d{3}-\\d{2}-\\d{4}\\b",
+    "mrn": "\\b(?:mrn|medical\\s+record(?:\\s+number)?)\\s*[:#]?\\s*[A-Za-z0-9\\-]{4,}\\b"
+  },
   "notes": "Strict text-first privacy mode. Server-side training/eval may consume sanitized descriptions plus task question only."
 }

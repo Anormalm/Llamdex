@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from typing import Iterable, List
 
 import numpy as np
@@ -58,7 +59,40 @@ def expected_calibration_error_from_bins(
 def keyword_consistency_score(text: str, keywords: List[str]) -> float:
     if not keywords:
         return 0.0
-    t = text.lower()
-    hit = sum(1 for k in keywords if k.lower() in t)
-    return float(hit / len(keywords))
 
+    def _norm_tokens(s: str) -> List[str]:
+        return re.findall(r"[a-z0-9]+", str(s).lower())
+
+    def _stem(tok: str) -> str:
+        t = tok
+        if len(t) > 5 and t.endswith("ing"):
+            t = t[:-3]
+        elif len(t) > 4 and t.endswith("ed"):
+            t = t[:-2]
+        elif len(t) > 4 and t.endswith("es"):
+            t = t[:-2]
+        elif len(t) > 3 and t.endswith("s"):
+            t = t[:-1]
+        return t
+
+    text_tokens = [_stem(t) for t in _norm_tokens(text)]
+    if not text_tokens:
+        return 0.0
+
+    required = []
+    for k in keywords:
+        required.extend(_norm_tokens(k))
+    required = [_stem(k) for k in required if k]
+    if not required:
+        return 0.0
+
+    def _token_hit(req: str) -> bool:
+        for t in text_tokens:
+            if req == t:
+                return True
+            if len(req) >= 5 and len(t) >= 5 and (req.startswith(t[:5]) or t.startswith(req[:5])):
+                return True
+        return False
+
+    hit = sum(1 for req in required if _token_hit(req))
+    return float(hit / len(required))

@@ -61,5 +61,7 @@ def test_prepare_hospital_dataset_normalizes_and_writes_manifest(tmp_path):
     assert manifest_payload["record_count"] == 1
     assert manifest_payload["label_distribution"] == {"Y": 1}
     assert manifest_payload["artifacts"][0]["sha256"]
+    assert "privacy_qa_summary" in manifest_payload
     reject_payload = json.loads(rejects.read_text(encoding="utf-8"))
     assert len(reject_payload) == 1
+    assert "qa" in reject_payload[0]

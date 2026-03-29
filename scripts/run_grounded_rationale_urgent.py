@@ -27,11 +27,14 @@ def parse_args():
     p.add_argument("--max_train_samples", type=int, default=512)
     p.add_argument("--max_eval_samples", type=int, default=128)
     p.add_argument("--batch_size", type=int, default=4)
+    p.add_argument("--repeat_seeds", type=int, nargs="*", default=[])
     p.add_argument("--gen_max_new_tokens", type=int, default=24)
     p.add_argument("--gen_temperature", type=float, default=0.7)
     p.add_argument("--gen_top_p", type=float, default=0.9)
     p.add_argument("--gen_repetition_penalty", type=float, default=1.1)
     p.add_argument("--gen_do_sample", type=int, default=0, choices=[0, 1])
+    p.add_argument("--min_rationale_chars", type=int, default=12)
+    p.add_argument("--min_rationale_keyword_score", type=float, default=0.6)
     p.add_argument("--out_csv", type=str, default="runs/urgent_grounded_rationale.csv")
     p.add_argument("--out_json", type=str, default="runs/urgent_grounded_rationale.json")
     p.add_argument("--save_config", type=str, default="runs/urgent_grounded_rationale.config.json")
@@ -52,6 +55,9 @@ def main():
         gen_top_p=a.gen_top_p,
         gen_repetition_penalty=a.gen_repetition_penalty,
         gen_do_sample=bool(a.gen_do_sample),
+        min_rationale_chars=a.min_rationale_chars,
+        min_rationale_keyword_score=a.min_rationale_keyword_score,
+        strict_answer_code=True,
     )
     cfg = TaskMatrixConfig(
         server_models_path=a.server_models_path,
@@ -68,6 +74,8 @@ def main():
         expert_model_id=a.expert_model_id,
         expert_output_dim=a.expert_output_dim,
         tasks=[task],
+        repeat_seeds=a.repeat_seeds,
+        aggregate_seed_metrics=True,
         out_csv=a.out_csv,
         out_json=a.out_json,
     )

@@ -11,6 +11,8 @@ sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 from src.multimodal.data import (
     build_dataset_manifest,
+    detect_pii_risks,
+    evaluate_description_quality,
     load_jsonl,
     load_label_ontology,
     load_text_privacy_policy,
@@ -108,6 +110,10 @@ def main():
 
     accepted: List[Dict] = []
     rejects: List[Dict] = []
+    qa_summary = {
+        "description_quality_issues": 0,
+        "pii_risk_hits": 0,
+    }
     for raw in rows:
         try:
             normalized = _normalize_row(raw, ontology, args)
@@ -116,10 +122,22 @@ def main():
             continue
 
         errors = []
+        desc_quality = evaluate_description_quality(normalized.get("description", ""), policy=policy)
+        pii_risks = detect_pii_risks(normalized.get("description", ""), policy=policy)
+        pii_risks.extend(detect_pii_risks(normalized.get("question", ""), policy=policy))
+        if desc_quality:
+            qa_summary["description_quality_issues"] += 1
+        if pii_risks:
+            qa_summary["pii_risk_hits"] += 1
+
         errors.extend(validate_hospital_record(normalized))
         errors.extend(validate_text_privacy_record(normalized, policy=policy))
         if errors:
-            rejects.append({"record": normalized, "errors": errors})
+            rejects.append({
+                "record": normalized,
+                "errors": sorted(set(errors)),
+                "qa": {"description_quality": desc_quality, "pii_risks": sorted(set(pii_risks))},
+            })
             continue
         accepted.append(normalized)
 
@@ -169,6 +187,7 @@ def main():
         release_status="v1_candidate",
     )
     manifest["privacy_policy"] = policy
+    manifest["privacy_qa_summary"] = qa_summary
     manifest["ontology_version"] = ontology.get("version", "unknown")
     with open(manifest_out, "w", encoding="utf-8") as f:
         json.dump(manifest, f, indent=2)

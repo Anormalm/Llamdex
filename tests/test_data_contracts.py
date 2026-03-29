@@ -86,3 +86,39 @@ def test_validate_dataset_manifest_passes(tmp_path):
     path = tmp_path / "manifest.json"
     path.write_text(json.dumps(manifest), encoding="utf-8")
     assert validate_dataset_manifest(str(path)) == []
+
+
+def test_validate_text_privacy_record_detects_pii_patterns():
+    from src.multimodal.data import load_text_privacy_policy, validate_text_privacy_record
+
+    row = {
+        "record_id": "r1",
+        "split": "train",
+        "question": "Is edema present?",
+        "answer": "No",
+        "label_code": "N",
+        "label_name": "No",
+        "description": "Contact patient at 212-555-0199 for follow-up.",
+        "deid_status": "deidentified",
+        "quality_pass": True,
+    }
+    errs = validate_text_privacy_record(row, policy=load_text_privacy_policy("conf/text_privacy_mode.v1.json"))
+    assert any(e.startswith("possible_pii:phone") for e in errs)
+
+
+def test_validate_text_privacy_record_detects_low_quality_description():
+    from src.multimodal.data import load_text_privacy_policy, validate_text_privacy_record
+
+    row = {
+        "record_id": "r2",
+        "split": "train",
+        "question": "Is edema present?",
+        "answer": "No",
+        "label_code": "N",
+        "label_name": "No",
+        "description": "aaaaa aaaaa aaaaa aaaaa aaaaa",
+        "deid_status": "deidentified",
+        "quality_pass": True,
+    }
+    errs = validate_text_privacy_record(row, policy=load_text_privacy_policy("conf/text_privacy_mode.v1.json"))
+    assert "description appears repetitive or under-specified" in errs
