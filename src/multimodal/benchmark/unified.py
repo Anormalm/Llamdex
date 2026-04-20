@@ -11,6 +11,8 @@ from src.multimodal.baselines.api_suite import load_api_baseline_config, run_api
 from src.multimodal.baselines.suite import load_baseline_suite_config, run_baseline_suite
 from src.multimodal.task_matrix.runner import load_task_matrix_config, run_task_matrix
 
+Row = Dict[str, object]
+
 
 @dataclass
 class UnifiedBenchmarkConfig:
@@ -21,8 +23,13 @@ class UnifiedBenchmarkConfig:
     out_json: str = "/disk1/lfhu/runs/unified_benchmark.json"
 
 
-def _save_rows(rows: List[Dict], out_csv: str, out_json: str):
-    os.makedirs(os.path.dirname(out_csv), exist_ok=True)
+def _ensure_parent_dir(path: str) -> None:
+    os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+
+
+def _save_rows(rows: List[Row], out_csv: str, out_json: str):
+    _ensure_parent_dir(out_csv)
+    _ensure_parent_dir(out_json)
     keys: List[str] = []
     for row in rows:
         for key in row.keys():
@@ -36,7 +43,7 @@ def _save_rows(rows: List[Dict], out_csv: str, out_json: str):
         json.dump(rows, f, indent=2)
 
 
-def _metric_name(row: Dict) -> str:
+def _metric_name(row: Row) -> str:
     if "metric_name" in row and row["metric_name"]:
         return str(row["metric_name"])
     if "mae" in row:
@@ -44,15 +51,31 @@ def _metric_name(row: Dict) -> str:
     return "accuracy"
 
 
-def _metric_value(row: Dict) -> float:
+def _metric_value(row: Row) -> float:
     if "metric" in row and isinstance(row.get("metric"), (int, float)):
         return float(row["metric"])
+    if "metric_mean" in row and isinstance(row.get("metric_mean"), (int, float)):
+        return float(row["metric_mean"])
     metric_name = _metric_name(row)
     v = row.get(metric_name, 0.0)
     return float(v) if isinstance(v, (int, float)) else 0.0
 
 
-def _canonical_row(row: Dict, *, benchmark_family: str, benchmark_source: str, baseline_name: str, task: str, dataset: str, backbone: str, fusion_policy, bundle_id, layer_idx, k, evidence_dim):
+def _canonical_row(
+    row: Row,
+    *,
+    benchmark_family: str,
+    benchmark_source: str,
+    baseline_name: object,
+    task: object,
+    dataset: object,
+    backbone: object,
+    fusion_policy: object,
+    bundle_id: object,
+    layer_idx: object,
+    k: object,
+    evidence_dim: object,
+) -> Row:
     metric_name = _metric_name(row)
     metric_value = _metric_value(row)
     return {
@@ -76,8 +99,8 @@ def _canonical_row(row: Dict, *, benchmark_family: str, benchmark_source: str, b
     }
 
 
-def _normalize_task_matrix_rows(rows: List[Dict]) -> List[Dict]:
-    out = []
+def _normalize_task_matrix_rows(rows: List[Row]) -> List[Row]:
+    out: List[Row] = []
     for row in rows:
         mode = str(row.get("baseline_mode", "unknown"))
         family = "llamdex" if mode in {"overwrite", "router_parallel"} else "architecture"
@@ -100,8 +123,8 @@ def _normalize_task_matrix_rows(rows: List[Dict]) -> List[Dict]:
     return out
 
 
-def _normalize_local_suite_rows(rows: List[Dict]) -> List[Dict]:
-    out = []
+def _normalize_local_suite_rows(rows: List[Row]) -> List[Row]:
+    out: List[Row] = []
     for row in rows:
         out.append(
             _canonical_row(
@@ -122,8 +145,8 @@ def _normalize_local_suite_rows(rows: List[Dict]) -> List[Dict]:
     return out
 
 
-def _normalize_api_rows(rows: List[Dict]) -> List[Dict]:
-    out = []
+def _normalize_api_rows(rows: List[Row]) -> List[Row]:
+    out: List[Row] = []
     for row in rows:
         out.append(
             _canonical_row(
@@ -144,8 +167,8 @@ def _normalize_api_rows(rows: List[Dict]) -> List[Dict]:
     return out
 
 
-def run_unified_benchmark(cfg: UnifiedBenchmarkConfig) -> List[Dict]:
-    rows: List[Dict] = []
+def run_unified_benchmark(cfg: UnifiedBenchmarkConfig) -> List[Row]:
+    rows: List[Row] = []
 
     if cfg.task_matrix_config:
         tm_cfg = load_task_matrix_config(cfg.task_matrix_config)

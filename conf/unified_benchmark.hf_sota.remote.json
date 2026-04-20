@@ -1,0 +1,7 @@
+{
+  "task_matrix_config": "/home/anormalm/Llamdex/conf/task_matrix_dtd_post_attn_router_upload.tuned_loaded.believability.remote.json",
+  "local_baseline_config": "/home/anormalm/Llamdex/conf/local_arch_baselines.hf_sota.dtd.remote.json",
+  "api_baseline_config": "/home/anormalm/Llamdex/conf/api_baselines.remote.expanded.v2.json",
+  "out_csv": "/disk1/lfhu/runs/unified_benchmark.hf_sota.remote.csv",
+  "out_json": "/disk1/lfhu/runs/unified_benchmark.hf_sota.remote.json"
+}

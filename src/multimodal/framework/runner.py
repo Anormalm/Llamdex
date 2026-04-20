@@ -217,7 +217,10 @@ def run_single_experiment(cfg: AblationConfig) -> Dict[str, float]:
         alpha=cfg.alpha,
     )
     semantic = SemanticEvidenceDomainExpert(builder, projector)
-    model.model.layers[cfg.layer_idx].add_expert_(semantic, map_to_expert_emb=None)
+    if hasattr(model, "add_expert_"):
+        model.add_expert_(semantic, layer_id=cfg.layer_idx, map_to_expert_emb=None)
+    else:
+        model.model.layers[cfg.layer_idx].add_expert_(semantic, map_to_expert_emb=None)
 
     model = model.to(dev).to(torch.bfloat16 if dev.type == "cuda" else torch.float32)
     trainable = [p for p in model.parameters() if p.requires_grad]

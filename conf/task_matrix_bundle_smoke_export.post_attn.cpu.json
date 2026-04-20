@@ -14,6 +14,7 @@
   "expert_output_dim": 32,
   "use_runtime_detector": false,
   "fusion_policy": "post_attn_router_parallel",
+  "upload_scope": "expert_only",
   "baseline_modes": ["router_parallel"],
   "out_csv": "/tmp/task_matrix_bundle_smoke_export.post_attn.cpu.csv",
   "out_json": "/tmp/task_matrix_bundle_smoke_export.post_attn.cpu.json",

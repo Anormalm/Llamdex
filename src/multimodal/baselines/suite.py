@@ -7,7 +7,7 @@ import re
 import time
 import traceback
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
@@ -32,9 +32,10 @@ from src.multimodal.utils.repro import set_seed
 
 @dataclass
 class FrozenVLMConfig:
-    model_type: str  # llava_next|qwen25_vl|internvl
+    model_type: str  # qwen25_vl|llava_onevision|llama32_vision|internvl
     model_id: str
     enabled: bool = True
+    trust_remote_code: bool = False
 
 
 @dataclass
@@ -327,20 +328,69 @@ def _two_stage_caption_eval(cfg: BaselineSuiteConfig, model, tokenizer, loader, 
     return {"accuracy": correct / max(1, total)}, latency
 
 
-def _vlm_generate_answer(model_type: str, model_id: str, prompt: str, image, device: torch.device) -> str:
+def _frozen_vlm_dtype(device: torch.device):
+    return torch.bfloat16 if device.type == "cuda" else torch.float32
+
+
+def _load_frozen_vlm(cfg: BaselineSuiteConfig, spec: FrozenVLMConfig, device: torch.device):
     import transformers as tr
 
-    proc = tr.AutoProcessor.from_pretrained(model_id)
+    proc = tr.AutoProcessor.from_pretrained(
+        spec.model_id,
+        cache_dir=cfg.server_models_path,
+        trust_remote_code=bool(spec.trust_remote_code),
+    )
     model_cls = getattr(tr, "AutoModelForImageTextToText", None) or getattr(tr, "AutoModelForVision2Seq", None)
     if model_cls is None:
         model_cls = tr.AutoModelForCausalLM
-    model = model_cls.from_pretrained(model_id).to(device)
+    model = model_cls.from_pretrained(
+        spec.model_id,
+        cache_dir=cfg.server_models_path,
+        torch_dtype=_frozen_vlm_dtype(device),
+        low_cpu_mem_usage=True,
+        trust_remote_code=bool(spec.trust_remote_code),
+    ).to(device)
     model.eval()
-    inputs = proc(text=prompt, images=image, return_tensors="pt")
+    return model, proc
+
+
+def _vlm_generate_answer(
+    prompt: str,
+    image,
+    *,
+    model,
+    processor,
+    device: torch.device,
+    max_new_tokens: int = 16,
+) -> str:
+    if hasattr(processor, "apply_chat_template"):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "image"},
+                    {"type": "text", "text": f"{prompt}\nReturn only one token."},
+                ],
+            }
+        ]
+        text_prompt = processor.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+        inputs = processor(images=image, text=text_prompt, return_tensors="pt")
+    else:
+        inputs = processor(text=f"{prompt}\nReturn only one token.", images=image, return_tensors="pt")
     inputs = {k: v.to(device) for k, v in inputs.items()}
     with torch.no_grad():
-        out = model.generate(**inputs, max_new_tokens=16)
-    return proc.decode(out[0], skip_special_tokens=True)
+        out = model.generate(**inputs, max_new_tokens=max_new_tokens, do_sample=False)
+
+    input_len = 0
+    if "input_ids" in inputs and inputs["input_ids"].ndim == 2:
+        input_len = int(inputs["input_ids"].shape[1])
+    gen_ids = out[0][input_len:] if input_len > 0 else out[0]
+    if hasattr(processor, "decode"):
+        return str(processor.decode(gen_ids, skip_special_tokens=True))
+    tok = getattr(processor, "tokenizer", None)
+    if tok is not None:
+        return str(tok.decode(gen_ids, skip_special_tokens=True))
+    return ""
 
 
 def _postparse_to_allowed(text: str, allowed_token_ids: List[int], tokenizer) -> int:
@@ -352,10 +402,20 @@ def _postparse_to_allowed(text: str, allowed_token_ids: List[int], tokenizer) ->
     return int(allowed_token_ids[0]) if allowed_token_ids else (int(toks[0]) if toks else 0)
 
 
-def _evaluate_frozen_vlm(cfg: BaselineSuiteConfig, loader, tokenizer, dev, model_type: str, model_id: str):
+def _evaluate_frozen_vlm(
+    cfg: BaselineSuiteConfig,
+    loader,
+    tokenizer,
+    dev,
+    spec: FrozenVLMConfig,
+    model=None,
+    processor=None,
+):
     ds = loader.dataset
     qa_mode = getattr(ds, "effective_qa_type", cfg.qa_type)
     allowed = _allowed_token_ids(cfg.task_family, qa_mode, tokenizer, ds)
+    if model is None or processor is None:
+        model, processor = _load_frozen_vlm(cfg, spec, dev)
     t0 = time.time()
     correct = total = 0
     for batch in loader:
@@ -363,7 +423,7 @@ def _evaluate_frozen_vlm(cfg: BaselineSuiteConfig, loader, tokenizer, dev, model
             prompt = batch["question_text"][i] if "question_text" in batch else "Answer with one token."
             img = batch["images"][i]
             x = (img - img.min()) / (img.max() - img.min() + 1e-6)
-            text = _vlm_generate_answer(model_type, model_id, prompt, x, dev)
+            text = _vlm_generate_answer(prompt, x, model=model, processor=processor, device=dev)
             pred_id = _postparse_to_allowed(text, allowed, tokenizer)
             gt_id = int(batch["target_token_id"][i].item())
             correct += int(pred_id == gt_id)
@@ -567,13 +627,16 @@ def run_baseline_suite(cfg: BaselineSuiteConfig) -> List[Dict]:
     # 3) Frozen SOTA VLMs
     vlms = cfg.frozen_vlms or [
         FrozenVLMConfig(model_type="qwen25_vl", model_id="Qwen/Qwen2.5-VL-7B-Instruct", enabled=True),
-        FrozenVLMConfig(model_type="internvl", model_id="OpenGVLab/InternVL2_5-8B", enabled=False),
+        FrozenVLMConfig(model_type="llava_onevision", model_id="llava-hf/llava-onevision-qwen2-7b-ov-hf", enabled=False),
+        FrozenVLMConfig(model_type="llama32_vision", model_id="meta-llama/Llama-3.2-11B-Vision-Instruct", enabled=False),
+        FrozenVLMConfig(model_type="internvl", model_id="OpenGVLab/InternVL2_5-8B", enabled=False, trust_remote_code=True),
     ]
     for v in vlms:
         if not v.enabled:
             continue
         try:
-            met, lat = _evaluate_frozen_vlm(cfg, loader, tokenizer, dev, v.model_type, v.model_id)
+            vlm_model, vlm_processor = _load_frozen_vlm(cfg, v, dev)
+            met, lat = _evaluate_frozen_vlm(cfg, loader, tokenizer, dev, v, model=vlm_model, processor=vlm_processor)
             rows.append(
                 {
                     "benchmark_family": "local_baseline",
@@ -622,7 +685,11 @@ def load_baseline_suite_config(path: str) -> BaselineSuiteConfig:
     with open(path, "r", encoding="utf-8") as f:
         raw = json.load(f)
     raw.pop("enable_expert_only", None)
-    fv = [FrozenVLMConfig(**x) for x in raw.pop("frozen_vlms", [])]
+    fv: List[FrozenVLMConfig] = []
+    for item in raw.pop("frozen_vlms", []):
+        data: Dict[str, Any] = dict(item)
+        data.setdefault("trust_remote_code", bool(data.get("model_type", "") in {"internvl"}))
+        fv.append(FrozenVLMConfig(**data))
     cfg = BaselineSuiteConfig(**raw)
     if fv:
         cfg.frozen_vlms = fv

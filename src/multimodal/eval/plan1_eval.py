@@ -267,13 +267,16 @@ def _build_connectors(args: EvalPlan1Args, model):
         raise ValueError(args.evidence_source)
     projector = EvidenceProjector(args.evidence_dim, hidden, args.num_tokens, alpha=args.alpha)
     expert = SemanticEvidenceDomainExpert(builder, projector)
-    layer = model.model.layers[args.layer_to_add]
-    if hasattr(layer, "add_expert_"):
-        layer.add_expert_(expert, map_to_expert_emb=None)
+    if hasattr(model, "add_expert_"):
+        model.add_expert_(expert, layer_id=args.layer_to_add, map_to_expert_emb=None)
     else:
-        if not hasattr(model, "_external_experts"):
-            model._external_experts = torch.nn.ModuleList()
-        model._external_experts.append(expert)
+        layer = model.model.layers[args.layer_to_add]
+        if hasattr(layer, "add_expert_"):
+            layer.add_expert_(expert, map_to_expert_emb=None)
+        else:
+            if not hasattr(model, "_external_experts"):
+                model._external_experts = torch.nn.ModuleList()
+            model._external_experts.append(expert)
 
     def _safe_load(module: torch.nn.Module, state_dict: Dict):
         cur = module.state_dict()

@@ -188,13 +188,16 @@ def _attach_semantic_expert(args: TrainPlan1Args, model, tokenizer):
         alpha=args.alpha,
     )
     semantic_expert = SemanticEvidenceDomainExpert(evidence_builder=evidence_builder, projector=projector)
-    layer = model.model.layers[args.layer_to_add]
-    if hasattr(layer, "add_expert_"):
-        layer.add_expert_(semantic_expert, map_to_expert_emb=None)
+    if hasattr(model, "add_expert_"):
+        model.add_expert_(semantic_expert, layer_id=args.layer_to_add, map_to_expert_emb=None)
     else:
-        if not hasattr(model, "_external_experts"):
-            model._external_experts = nn.ModuleList()
-        model._external_experts.append(semantic_expert)
+        layer = model.model.layers[args.layer_to_add]
+        if hasattr(layer, "add_expert_"):
+            layer.add_expert_(semantic_expert, map_to_expert_emb=None)
+        else:
+            if not hasattr(model, "_external_experts"):
+                model._external_experts = nn.ModuleList()
+            model._external_experts.append(semantic_expert)
     model.configure_injection_(layer_id=args.layer_to_add, inject_location=args.inject_location)
     return model, semantic_expert, vision_expert
 

@@ -9,7 +9,7 @@ from src.multimodal.task_matrix.runner import TaskMatrixConfig, TaskSpec, run_ta
 
 def parse_args():
     p = argparse.ArgumentParser(
-        description="Privacy-preserving bundle-only workflow: export frozen bundle, then reload it for inference."
+        description="Privacy-preserving expert-upload workflow: export frozen expert state, then reload it and train/run server-side connectors."
     )
     p.add_argument("--mode", choices=["export", "reload", "both"], default="both")
     p.add_argument(
@@ -25,6 +25,7 @@ def parse_args():
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--local_files_only", action="store_true", default=True)
     p.add_argument("--bundle_root", type=str, default="/tmp/llamdex_bundle_only_handoff")
+    p.add_argument("--upload_scope", choices=["expert_only", "full_bundle"], default="expert_only")
     p.add_argument("--evidence_dim", type=int, default=64)
     p.add_argument("--num_tokens", type=int, default=4)
     p.add_argument("--layer_idx", type=int, default=0)
@@ -75,6 +76,7 @@ def _base_cfg(a) -> dict:
         expert_output_dim=a.expert_output_dim,
         use_runtime_detector=bool(a.use_runtime_detector),
         fusion_policy=a.policy,
+        upload_scope=a.upload_scope,
         baseline_modes=["router_parallel"],
         tasks=[_task_spec(a)],
     )
@@ -91,6 +93,7 @@ def run_export(a):
         save_bundle_dir=save_root,
         out_csv=f"/tmp/bundle_only_export.{a.policy}.csv",
         out_json=f"/tmp/bundle_only_export.{a.policy}.json",
+        normalization_stats={"upload_scope": a.upload_scope},
     )
     rows = run_task_matrix(cfg)
     print(f"[export] rows={len(rows)} bundle_dir={_bundle_dir(a)}")
@@ -120,7 +123,9 @@ def main():
     if a.mode in {"reload", "both"}:
         run_reload(a)
 
-    print("Privacy note: this workflow exports and reloads frozen bundles only; it does not transfer per-example z.")
+    print(
+        f"Privacy note: this workflow exports and reloads {a.upload_scope} artifacts only; it does not transfer per-example z."
+    )
 
 
 if __name__ == "__main__":

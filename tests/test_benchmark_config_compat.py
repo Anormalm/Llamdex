@@ -61,4 +61,13 @@ def test_task_matrix_loader_defaults_to_router_parallel(tmp_path):
     cfg = load_task_matrix_config(str(cfg_path))
     assert cfg.baseline_modes == ["router_parallel"]
     assert cfg.expert_type == "siglip"
+    assert cfg.upload_scope == "expert_only"
     assert cfg.tasks[0].image_dataset_name == "dtd"
+
+
+def test_remote_bootstrap_bundle_config_uses_expert_only_upload():
+    from src.multimodal.task_matrix.runner import load_task_matrix_config
+
+    cfg = load_task_matrix_config("conf/task_matrix_bootstrap_bundle.pre_ffn.remote.json")
+    assert cfg.save_bundle_dir == "/disk1/lfhu/runs/bundles_preffn_uploaded_qwen35"
+    assert cfg.upload_scope == "expert_only"

@@ -1,0 +1,21 @@
+[
+  {
+    "benchmark_family": "architecture",
+    "benchmark_source": "lora_finetune",
+    "baseline_name": "lora_qwen35_9b",
+    "task": "finegrained",
+    "dataset": "dtd",
+    "backbone": "Qwen/Qwen3.5-9B",
+    "fusion_policy": null,
+    "bundle_id": null,
+    "layer_idx": null,
+    "k": null,
+    "evidence_dim": null,
+    "metric_name": "accuracy",
+    "metric": 0.0,
+    "metric_value": 0.0,
+    "status": "ok",
+    "seed": 42,
+    "notes": "Fill from LoRA eval outputs; keep task/dataset naming identical to unified benchmark rows."
+  }
+]

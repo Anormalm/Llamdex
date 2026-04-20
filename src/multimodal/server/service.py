@@ -88,14 +88,23 @@ def attach_bundle_runtime(model, runtime: BundleServiceRuntime, *, layer_idx: in
         runtime.fusion_policy = build_fusion_policy(policy_name, hidden_size=runtime.semantic_expert.projector.hidden_size)
     runtime.inject_via_layer = False
     if policy_name == "pre_attn_overwrite":
-        layer = model.model.layers[layer_idx]
-        if hasattr(layer, "add_expert_"):
-            layer.add_expert_(runtime.semantic_expert, map_to_expert_emb=None)
+        if hasattr(model, "add_expert_"):
+            model.add_expert_(runtime.semantic_expert, layer_id=layer_idx, map_to_expert_emb=None)
             runtime.inject_via_layer = True
         else:
-            if not hasattr(model, "_external_experts"):
-                model._external_experts = nn.ModuleList()
-            model._external_experts.append(runtime.semantic_expert)
+            layer = model.model.layers[layer_idx]
+            if hasattr(layer, "add_expert_"):
+                layer.add_expert_(runtime.semantic_expert, map_to_expert_emb=None)
+                runtime.inject_via_layer = True
+            else:
+                if not hasattr(model, "_external_experts"):
+                    model._external_experts = nn.ModuleList()
+                model._external_experts.append(runtime.semantic_expert)
+    elif policy_name in {"pre_ffn_router_parallel", "post_attn_router_layers", "post_attn_router_all_layers"} and hasattr(
+        runtime.fusion_policy, "register_to_model"
+    ):
+        target_layers = None if policy_name in {"post_attn_router_layers", "post_attn_router_all_layers"} else int(layer_idx)
+        runtime.fusion_policy.register_to_model(model, target_layers)
     return runtime
 
 

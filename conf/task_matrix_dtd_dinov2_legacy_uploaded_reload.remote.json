@@ -1,0 +1,36 @@
+{
+  "server_models_path": "/disk1/lfhu/hf_cache",
+  "model_name": "Qwen/Qwen3.5-9B",
+  "data_root": "/disk1/lfhu/data",
+  "seed": 42,
+  "device": "cuda",
+  "learning_rate": 0.0001,
+  "evidence_dim": 256,
+  "num_tokens": 4,
+  "layer_idx": 0,
+  "alpha": 1.0,
+  "expert_type": "dinov2",
+  "expert_model_id": "facebook/dinov2-base",
+  "expert_output_dim": 768,
+  "use_runtime_detector": false,
+  "fusion_policy": "pre_attn_overwrite",
+  "baseline_modes": [
+    "overwrite"
+  ],
+  "out_csv": "/disk1/lfhu/runs/task_matrix_dtd_dinov2_legacy_uploaded_reload.remote.csv",
+  "out_json": "/disk1/lfhu/runs/task_matrix_dtd_dinov2_legacy_uploaded_reload.remote.json",
+  "load_bundle_dir": "/disk1/lfhu/runs/bundles_legacy_overwrite_uploaded_qwen35/finegrained_overwrite",
+  "freeze_loaded_semantic_expert": true,
+  "freeze_loaded_fusion_policy": false,
+  "tasks": [
+    {
+      "name": "finegrained",
+      "image_dataset_name": "dtd",
+      "train_steps": 150,
+      "max_train_samples": 1024,
+      "max_eval_samples": 256,
+      "batch_size": 8,
+      "constrained_decoding": true
+    }
+  ]
+}

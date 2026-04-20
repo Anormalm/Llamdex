@@ -5,9 +5,9 @@
 The intended status quo is:
 
 1. Train the expert stack on the client side.
-2. Export a frozen expert bundle.
-3. Upload only the frozen bundle to the server.
-4. Reload the bundle inside the server runtime.
+2. Export the frozen expert artifact.
+3. Upload only the frozen expert to the server.
+4. Reload that expert inside the server runtime.
 5. Compute `z_ctx` locally inside the runtime from sanitized server-visible input.
 6. Inject that locally computed evidence through one of two supported router policies:
    - `post_attn_router_parallel`
@@ -15,18 +15,19 @@ The intended status quo is:
 
 The privacy rule is:
 
-`Upload bundle, not per-example z.`
+`Upload expert, not per-example z.`
 
 Per-sample evidence vectors are treated as privacy-sensitive and should not be transferred as part of the serving contract.
 
 ## Current Recommended Architecture
 
-### Bundle-Only Handoff
+### Expert-Only Handoff
 
-- Client trains expert / projector / fusion stack locally.
-- Client packages a frozen bundle with weights and manifest metadata.
-- Server validates and reloads the uploaded bundle.
-- Server never receives raw private artifacts as part of the bundle contract.
+- Client trains the expert stack locally.
+- Client uploads only the frozen expert artifact plus manifest/config metadata.
+- Server validates and reloads the uploaded expert.
+- Server reconstructs or trains builder / projector / router modules server-side.
+- Server never receives raw private artifacts as part of the upload contract.
 - Server does not receive per-example `z`.
 
 ### Injection Policies Under Comparison
@@ -49,7 +50,7 @@ Per-sample evidence vectors are treated as privacy-sensitive and should not be t
 
 The latest best design should be presented as:
 
-- `bundle-only upload`
+- `expert-only upload`
 - `local z_ctx computation after reload`
 - `post_attn_router_parallel` and `pre_ffn_router_parallel` as the two main transformer injection mechanisms
 

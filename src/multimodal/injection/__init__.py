@@ -2,6 +2,7 @@ from .evidence_domain_expert import SemanticEvidenceDomainExpert
 from .fusion_policies import (
     BaseFusionPolicy,
     FusionContext,
+    PostAttnRouterLayersPolicy,
     PostAttnRouterParallelPolicy,
     PreAttnOverwritePolicy,
     build_fusion_policy,
@@ -15,5 +16,6 @@ __all__ = [
     "FusionContext",
     "PreAttnOverwritePolicy",
     "PostAttnRouterParallelPolicy",
+    "PostAttnRouterLayersPolicy",
     "build_fusion_policy",
 ]

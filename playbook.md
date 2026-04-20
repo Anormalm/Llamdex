@@ -184,7 +184,7 @@ If OOM:
 
 ```bash
 cd /home/anormalm/Llamdex
-source venv/bin/activate
+source /home/anormalm/Llamdex/.venv/bin/activate
 git pull
 python -m pip install -U transformers accelerate tokenizers huggingface_hub safetensors sentencepiece
 python -c "import torch,transformers,accelerate; print(torch.__version__, transformers.__version__, accelerate.__version__)"

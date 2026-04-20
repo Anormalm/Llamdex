@@ -1,0 +1,90 @@
+{
+  "server_models_path": "/disk1/lfhu/hf_cache",
+  "model_name": "Qwen/Qwen3.5-9B",
+  "data_root": "/disk1/lfhu/data",
+  "seed": 42,
+  "repeat_seeds": [43, 44],
+  "aggregate_seed_metrics": true,
+  "device": "cuda",
+  "learning_rate": 0.00008,
+  "weight_decay": 0.01,
+  "grad_clip_norm": 1.0,
+  "lr_schedule": "cosine",
+  "lr_warmup_steps": 30,
+  "evidence_dim": 256,
+  "num_tokens": 4,
+  "layer_idx": 0,
+  "alpha": 1.0,
+  "expert_type": "dinov2",
+  "expert_model_id": "facebook/dinov2-base",
+  "expert_output_dim": 768,
+  "baseline_modes": ["llm_only", "text_prompt_only", "router_parallel"],
+  "out_csv": "/disk1/lfhu/runs/task_matrix_budget_upgrade.cross_dataset.pre_ffn.tuned.remote.csv",
+  "out_json": "/disk1/lfhu/runs/task_matrix_budget_upgrade.cross_dataset.pre_ffn.tuned.remote.json",
+  "tasks": [
+    {
+      "name": "finegrained",
+      "image_dataset_name": "dtd",
+      "train_steps": 300,
+      "max_train_samples": 2048,
+      "max_eval_samples": 512,
+      "batch_size": 8,
+      "constrained_decoding": true
+    },
+    {
+      "name": "finegrained",
+      "image_dataset_name": "oxford_pet",
+      "train_steps": 300,
+      "max_train_samples": 2048,
+      "max_eval_samples": 512,
+      "batch_size": 8,
+      "constrained_decoding": true
+    },
+    {
+      "name": "finegrained",
+      "image_dataset_name": "cifar10",
+      "train_steps": 300,
+      "max_train_samples": 2048,
+      "max_eval_samples": 512,
+      "batch_size": 8,
+      "constrained_decoding": true
+    },
+    {
+      "name": "strict_yesno",
+      "image_dataset_name": "dtd",
+      "train_steps": 200,
+      "max_train_samples": 1536,
+      "max_eval_samples": 384,
+      "batch_size": 8,
+      "constrained_decoding": true
+    },
+    {
+      "name": "population",
+      "image_dataset_name": "oxford_pet",
+      "train_steps": 200,
+      "max_train_samples": 1024,
+      "max_eval_samples": 256,
+      "batch_size": 8,
+      "constrained_decoding": true,
+      "population_group_size": 8
+    },
+    {
+      "name": "grounded_generation",
+      "image_dataset_name": "dtd",
+      "train_steps": 180,
+      "max_train_samples": 1024,
+      "max_eval_samples": 256,
+      "batch_size": 4,
+      "constrained_decoding": true,
+      "gen_max_new_tokens": 28,
+      "gen_temperature": 0.0,
+      "gen_top_p": 0.9,
+      "gen_repetition_penalty": 1.03,
+      "gen_do_sample": false,
+      "min_rationale_chars": 12,
+      "min_rationale_keyword_score": 0.6,
+      "strict_answer_code": true
+    }
+  ],
+  "fusion_policy": "pre_ffn_router_parallel"
+}

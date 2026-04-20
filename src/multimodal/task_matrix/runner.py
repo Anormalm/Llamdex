@@ -7,7 +7,7 @@ import os
 import re
 import traceback
 from contextlib import contextmanager
-from dataclasses import asdict, dataclass, field
+from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 from unittest.mock import patch
 
@@ -78,7 +78,7 @@ class TaskSpec:
 class TaskMatrixConfig:
     server_models_path: str = "/disk1/lfhu/hf_cache"
     model_name: str = "Qwen/Qwen3.5-9B"
-    data_root: str = "./data"
+    data_root: str = "/disk1/lfhu/data"
     seed: int = 42
     device: str = "cuda"
     learning_rate: float = 2e-4
@@ -89,6 +89,7 @@ class TaskMatrixConfig:
     evidence_dim: int = 256
     num_tokens: int = 4
     layer_idx: int = 0
+    router_layer_indices: Optional[List[int]] = None
     alpha: float = 1.0
     expert_type: str = "siglip"
     expert_model_id: Optional[str] = None
@@ -96,10 +97,11 @@ class TaskMatrixConfig:
     expert_output_dim: int = 512
     use_runtime_detector: bool = False
     local_files_only: bool = False
-    fusion_policy: str = "post_attn_router_parallel"  # pre_attn_overwrite|post_attn_router_parallel
+    fusion_policy: str = "post_attn_router_parallel"  # pre_attn_overwrite|post_attn_router_parallel|post_attn_router_layers|pre_ffn_router_parallel
     baseline_modes: List[str] = field(default_factory=lambda: ["router_parallel"])
     save_bundle_dir: Optional[str] = None
     load_bundle_dir: Optional[str] = None
+    upload_scope: str = "expert_only"
     # Privacy contract: when loading client-uploaded bundles on server,
     # keep expert weights frozen and train only connector/injection modules.
     freeze_loaded_semantic_expert: bool = True
@@ -109,8 +111,8 @@ class TaskMatrixConfig:
     repeat_seeds: List[int] = field(default_factory=list)
     aggregate_seed_metrics: bool = True
     tasks: List[TaskSpec] = field(default_factory=lambda: [TaskSpec(name="finegrained")])
-    out_csv: str = "runs/task_matrix_results.csv"
-    out_json: str = "runs/task_matrix_results.json"
+    out_csv: str = "/disk1/lfhu/runs/task_matrix_results.csv"
+    out_json: str = "/disk1/lfhu/runs/task_matrix_results.json"
 
 
 def _device(device: str) -> torch.device:
@@ -178,6 +180,8 @@ def _normalize_baseline_modes(modes: List[str]) -> List[str]:
         "injection_overwrite": "overwrite",
         "pre_attn_overwrite": "overwrite",
         "post_attn_router_parallel": "router_parallel",
+        "post_attn_router_layers": "router_parallel",
+        "post_attn_router_all_layers": "router_parallel",
     }
     out = []
     for raw in modes or ["router_parallel"]:
@@ -196,7 +200,7 @@ def _fusion_policy_for_mode(cfg: TaskMatrixConfig, mode: str) -> str:
         return "pre_attn_overwrite"
     if mode == "router_parallel":
         preferred = str(getattr(cfg, "fusion_policy", "post_attn_router_parallel")).strip().lower()
-        if preferred in {"post_attn_router_parallel", "pre_ffn_router_parallel"}:
+        if preferred in {"post_attn_router_parallel", "post_attn_router_layers", "post_attn_router_all_layers", "pre_ffn_router_parallel"}:
             return preferred
         return "post_attn_router_parallel"
     return "post_attn_router_parallel"
@@ -248,6 +252,15 @@ class RuntimeConnector:
     inject_via_layer: bool
 
 
+def _router_layer_indices(cfg: TaskMatrixConfig, policy_name: str):
+    indices = getattr(cfg, "router_layer_indices", None)
+    if indices:
+        return [int(i) for i in indices]
+    if policy_name in {"post_attn_router_layers", "post_attn_router_all_layers"}:
+        return None
+    return int(cfg.layer_idx)
+
+
 def _attach_connector(cfg: TaskMatrixConfig, model, baseline_mode: str) -> Optional[RuntimeConnector]:
     if baseline_mode in {"llm_only", "text_prompt_only"}:
         return None
@@ -269,16 +282,22 @@ def _attach_connector(cfg: TaskMatrixConfig, model, baseline_mode: str) -> Optio
         policy_name = manifest.fusion_policy if manifest is not None else getattr(fusion_policy, "policy_name", fusion_policy_name)
         inject_via_layer = False
         if policy_name == "pre_attn_overwrite":
-            layer = model.model.layers[cfg.layer_idx]
-            if hasattr(layer, "add_expert_"):
-                layer.add_expert_(expert, map_to_expert_emb=None)
+            if hasattr(model, "add_expert_"):
+                model.add_expert_(expert, layer_id=cfg.layer_idx, map_to_expert_emb=None)
                 inject_via_layer = True
             else:
-                if not hasattr(model, "_external_experts"):
-                    model._external_experts = nn.ModuleList()
-                model._external_experts.append(expert)
-        elif policy_name == "pre_ffn_router_parallel" and hasattr(fusion_policy, "register_to_model"):
-            fusion_policy.register_to_model(model, cfg.layer_idx)
+                layer = model.model.layers[cfg.layer_idx]
+                if hasattr(layer, "add_expert_"):
+                    layer.add_expert_(expert, map_to_expert_emb=None)
+                    inject_via_layer = True
+                else:
+                    if not hasattr(model, "_external_experts"):
+                        model._external_experts = nn.ModuleList()
+                    model._external_experts.append(expert)
+        elif policy_name in {"pre_ffn_router_parallel", "post_attn_router_layers", "post_attn_router_all_layers"} and hasattr(
+            fusion_policy, "register_to_model"
+        ):
+            fusion_policy.register_to_model(model, _router_layer_indices(cfg, policy_name))
 
         if bool(getattr(cfg, "freeze_loaded_semantic_expert", True)):
             _set_module_trainable(expert, False)
@@ -308,16 +327,22 @@ def _attach_connector(cfg: TaskMatrixConfig, model, baseline_mode: str) -> Optio
     fusion_policy = build_fusion_policy(fusion_policy_name, hidden_size=model.config.hidden_size)
     inject_via_layer = False
     if fusion_policy_name == "pre_attn_overwrite":
-        layer = model.model.layers[cfg.layer_idx]
-        if hasattr(layer, "add_expert_"):
-            layer.add_expert_(expert, map_to_expert_emb=None)
+        if hasattr(model, "add_expert_"):
+            model.add_expert_(expert, layer_id=cfg.layer_idx, map_to_expert_emb=None)
             inject_via_layer = True
         else:
-            if not hasattr(model, "_external_experts"):
-                model._external_experts = nn.ModuleList()
-            model._external_experts.append(expert)
-    elif fusion_policy_name == "pre_ffn_router_parallel" and hasattr(fusion_policy, "register_to_model"):
-        fusion_policy.register_to_model(model, cfg.layer_idx)
+            layer = model.model.layers[cfg.layer_idx]
+            if hasattr(layer, "add_expert_"):
+                layer.add_expert_(expert, map_to_expert_emb=None)
+                inject_via_layer = True
+            else:
+                if not hasattr(model, "_external_experts"):
+                    model._external_experts = nn.ModuleList()
+                model._external_experts.append(expert)
+    elif fusion_policy_name in {"pre_ffn_router_parallel", "post_attn_router_layers", "post_attn_router_all_layers"} and hasattr(
+        fusion_policy, "register_to_model"
+    ):
+        fusion_policy.register_to_model(model, _router_layer_indices(cfg, fusion_policy_name))
     return RuntimeConnector(semantic_expert=expert, fusion_policy=fusion_policy, inject_via_layer=inject_via_layer)
 
 
@@ -494,6 +519,18 @@ def _apply_fusion_policy(
     return runtime.fusion_policy.forward_logits(model=model, outputs=outputs, logits=logits, z_ctx=z_ctx, ctx=ctx)
 
 
+def _set_router_context_if_needed(runtime: Optional[RuntimeConnector], expert_input) -> bool:
+    if runtime is None or expert_input is None or not hasattr(runtime.fusion_policy, "set_context"):
+        return False
+    policy_name = getattr(runtime.fusion_policy, "policy_name", "")
+    if policy_name not in {"pre_ffn_router_parallel", "post_attn_router_layers", "post_attn_router_all_layers"}:
+        return False
+    z = runtime.semantic_expert.evidence_builder(expert_input)
+    z_tokens = runtime.semantic_expert.projector(z)
+    runtime.fusion_policy.set_context(z_tokens.mean(dim=1))
+    return True
+
+
 def _forward_logits_for_batch(
     model,
     runtime: Optional[RuntimeConnector],
@@ -506,10 +543,7 @@ def _forward_logits_for_batch(
     mask = batch["prompt_mask"].to(device)
     expert_input = None if baseline_mode in {"llm_only", "text_prompt_only"} else _expert_input_from_batch(batch, device, cfg.expert_type)
     policy_name = getattr(runtime.fusion_policy, "policy_name", "") if runtime is not None else ""
-    if runtime is not None and policy_name == "pre_ffn_router_parallel" and expert_input is not None and hasattr(runtime.fusion_policy, "set_context"):
-        z = runtime.semantic_expert.evidence_builder(expert_input)
-        z_tokens = runtime.semantic_expert.projector(z)
-        runtime.fusion_policy.set_context(z_tokens.mean(dim=1))
+    context_was_set = _set_router_context_if_needed(runtime, expert_input)
     try:
         model_out = model(
             tokens,
@@ -520,7 +554,7 @@ def _forward_logits_for_batch(
             use_cache=False,
         )
     finally:
-        if runtime is not None and policy_name == "pre_ffn_router_parallel" and hasattr(runtime.fusion_policy, "clear_context"):
+        if context_was_set and runtime is not None and hasattr(runtime.fusion_policy, "clear_context"):
             runtime.fusion_policy.clear_context()
     logits = model_out.logits[:, -1, :]
     if baseline_mode == "router_parallel" and runtime is not None:
@@ -612,17 +646,21 @@ def _generate_rationale(
     top_p: float = 0.9,
     repetition_penalty: float = 1.1,
     do_sample: bool = False,
+    prefix_text: str = "",
 ):
     seq = prompt_tokens.clone()
     mask = prompt_mask.clone()
     generated_ids: List[int] = []
+    prefix_text = str(prefix_text or "")
+    if prefix_text:
+        prefix_ids = tokenizer.encode(prefix_text, add_special_tokens=False)
+        if prefix_ids:
+            prefix = torch.tensor(prefix_ids, dtype=seq.dtype, device=seq.device).unsqueeze(0)
+            seq = torch.cat([seq, prefix], dim=1)
+            mask = torch.cat([mask, torch.ones_like(prefix)], dim=1)
     eos_id = tokenizer.eos_token_id
     policy_name = getattr(runtime.fusion_policy, "policy_name", "")
-    pre_ffn_mode = policy_name == "pre_ffn_router_parallel" and hasattr(runtime.fusion_policy, "set_context")
-    if pre_ffn_mode:
-        z = runtime.semantic_expert.evidence_builder(expert_input)
-        z_tokens = runtime.semantic_expert.projector(z)
-        runtime.fusion_policy.set_context(z_tokens.mean(dim=1))
+    context_was_set = _set_router_context_if_needed(runtime, expert_input)
     try:
         for _ in range(max_new_tokens):
             out = model(
@@ -634,7 +672,7 @@ def _generate_rationale(
                 use_cache=False,
             )
             step_logits = out.logits[:, -1, :]
-            if policy_name == "post_attn_router_parallel":
+            if policy_name in {"post_attn_router_parallel", "post_attn_router_layers", "post_attn_router_all_layers"}:
                 step_logits = _apply_fusion_policy(
                     model=model,
                     runtime=runtime,
@@ -658,7 +696,7 @@ def _generate_rationale(
             if eos_id is not None and int(nxt.item()) == int(eos_id):
                 break
     finally:
-        if pre_ffn_mode and hasattr(runtime.fusion_policy, "clear_context"):
+        if context_was_set and hasattr(runtime.fusion_policy, "clear_context"):
             runtime.fusion_policy.clear_context()
     # Decode generated continuation only; decoding the full sequence includes the
     # prompt template (which itself contains "Answer:/Rationale:" placeholders).
@@ -666,7 +704,7 @@ def _generate_rationale(
         text = tokenizer.decode(generated_ids, skip_special_tokens=True)
     except Exception:
         text = tokenizer.decode(seq[0].tolist(), skip_special_tokens=True)
-    return str(text)
+    return f"{prefix_text}{text}".strip()
 
 
 def _extract_answer_rationale(text: str):
@@ -675,6 +713,27 @@ def _extract_answer_rationale(text: str):
     answer_text = ans_matches[-1].strip() if ans_matches else ""
     rationale_text = rat_matches[-1].strip() if rat_matches else ""
     return answer_text, rationale_text
+
+
+def _canonicalize_grounded_output(raw_text: str, predicted_code: str) -> str:
+    answer_text, rationale_text = _extract_answer_rationale(raw_text)
+    final_answer = _normalize_code_text(answer_text) or _normalize_code_text(predicted_code)
+    final_rationale = rationale_text.strip()
+    if not final_rationale:
+        final_rationale = str(raw_text).strip()
+    final_rationale = re.sub(r"(?im)^\s*answer\s*:\s*", "", final_rationale).strip()
+    final_rationale = re.sub(r"(?im)^\s*rationale\s*:\s*", "", final_rationale).strip()
+    return f"Answer: {final_answer}. Rationale: {final_rationale}".strip()
+
+
+def _predicted_label_text(batch: Dict, pred_token_id: int) -> str:
+    allowed = list(batch.get("allowed_token_ids") or [])
+    code_labels = list(batch.get("code_labels") or [])
+    lookup = {int(token_id): idx for idx, token_id in enumerate(allowed)}
+    idx = lookup.get(int(pred_token_id))
+    if idx is None or idx >= len(code_labels):
+        return ""
+    return str(code_labels[idx]).replace("_", " ").strip()
 
 
 def _normalize_code_text(s: str) -> str:
@@ -686,6 +745,12 @@ def _metric_name_for_task(task_name: str) -> str:
     if task_name == "population":
         return "mae"
     return "accuracy"
+
+
+def _result_dataset_name(task: TaskSpec) -> str:
+    if task.name == "vqa":
+        return str(task.vqa_hf_dataset_name)
+    return str(task.image_dataset_name)
 
 
 def _eval_task(
@@ -751,6 +816,7 @@ def _eval_task(
                 for i in range(tokens.size(0)):
                     if runtime is None:
                         continue
+                    pred_code = _normalize_code_text(tokenizer.decode([int(pred_ids[i].item())]))
                     exp_in = _expert_input_from_batch(
                         {"images": batch["images"][i : i + 1]}, device, cfg.expert_type
                     )
@@ -769,11 +835,17 @@ def _eval_task(
                         top_p=float(task.gen_top_p),
                         repetition_penalty=float(task.gen_repetition_penalty),
                         do_sample=bool(task.gen_do_sample),
+                        prefix_text=(
+                            f"Answer: {pred_code}. Rationale: {_predicted_label_text(batch, int(pred_ids[i].item()))} ".strip()
+                            if pred_code
+                            else ""
+                        ),
                     )
                     kws = batch.get("rationale_keywords", [[]])[i]
+                    true_code = _normalize_code_text(tokenizer.decode([int(targets[i].item())]))
+                    gen = _canonicalize_grounded_output(gen, pred_code)
                     answer_text, rationale_text = _extract_answer_rationale(gen)
                     pred_code = _normalize_code_text(answer_text)
-                    true_code = _normalize_code_text(tokenizer.decode([int(targets[i].item())]))
                     if pred_code:
                         answer_code_valid += 1
                     if pred_code and pred_code == true_code:
@@ -848,6 +920,7 @@ def _append_seed_aggregate_rows(rows: List[Dict]) -> List[Dict]:
         first["seed"] = "aggregate"
         first["seed_count"] = len(group)
         first["status"] = "ok" if all(g.get("status") == "ok" for g in group) else "mixed"
+        metric_name = str(first.get("metric_name") or _metric_name_for_task(str(first.get("task", ""))))
         for m in _metric_fields_for_aggregate(group):
             vals = [float(g[m]) for g in group if isinstance(g.get(m), (int, float))]
             if not vals:
@@ -856,6 +929,10 @@ def _append_seed_aggregate_rows(rows: List[Dict]) -> List[Dict]:
             var = float(sum((x - mean) ** 2 for x in vals) / len(vals))
             first[f"{m}_mean"] = mean
             first[f"{m}_std"] = var ** 0.5
+        if f"{metric_name}_mean" in first:
+            first[metric_name] = float(first[f"{metric_name}_mean"])
+        if "metric_mean" in first:
+            first["metric"] = float(first["metric_mean"])
         agg_rows.append(first)
     return rows + agg_rows
 
@@ -915,6 +992,7 @@ def run_task_matrix(cfg: TaskMatrixConfig) -> List[Dict]:
                             fusion_policy=runtime.fusion_policy,
                             normalization_stats=cfg.normalization_stats,
                             label_schema=cfg.label_schema,
+                            upload_scope=str(getattr(cfg, "upload_scope", "expert_only")),
                             metadata={
                                 "task": task.name,
                                 "model_name": cfg.model_name,
@@ -926,7 +1004,7 @@ def run_task_matrix(cfg: TaskMatrixConfig) -> List[Dict]:
 
                     row = {
                         "task": task.name,
-                        "dataset": task.image_dataset_name,
+                        "dataset": _result_dataset_name(task),
                         "baseline_mode": baseline_mode,
                         "expert_type": cfg.expert_type,
                         "backbone": cfg.model_name,
@@ -946,7 +1024,7 @@ def run_task_matrix(cfg: TaskMatrixConfig) -> List[Dict]:
                 except Exception as exc:
                     row = {
                         "task": task.name,
-                        "dataset": task.image_dataset_name,
+                        "dataset": _result_dataset_name(task),
                         "baseline_mode": baseline_mode,
                         "expert_type": cfg.expert_type,
                         "backbone": cfg.model_name,

@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LoRA Baseline Result Rows",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": [
+      "benchmark_family",
+      "benchmark_source",
+      "baseline_name",
+      "task",
+      "dataset",
+      "backbone",
+      "metric_name",
+      "metric",
+      "status"
+    ],
+    "properties": {
+      "benchmark_family": {"type": "string", "enum": ["architecture", "llamdex", "api"]},
+      "benchmark_source": {"type": "string", "enum": ["lora_finetune"]},
+      "baseline_name": {"type": "string", "description": "e.g. lora_qwen35_9b"},
+      "task": {"type": "string", "enum": ["finegrained", "strict_yesno", "population", "grounded_generation"]},
+      "dataset": {"type": "string", "enum": ["dtd", "oxford_pet", "cifar10"]},
+      "backbone": {"type": "string"},
+      "fusion_policy": {"type": ["string", "null"]},
+      "bundle_id": {"type": ["string", "null"]},
+      "layer_idx": {"type": ["integer", "null"]},
+      "k": {"type": ["integer", "null"]},
+      "evidence_dim": {"type": ["integer", "null"]},
+      "metric_name": {"type": "string", "enum": ["accuracy", "f1", "mae", "calibration_error", "rationale_consistency", "format_compliance", "rationale_nonempty_rate", "answer_code_accuracy", "rationale_hallucination_rate", "rationale_faithful_rate"]},
+      "metric": {"type": "number"},
+      "metric_value": {"type": "number"},
+      "status": {"type": "string", "enum": ["ok", "error"]},
+      "seed": {"type": ["integer", "string", "null"]},
+      "seed_count": {"type": ["integer", "null"]},
+      "error": {"type": "string"},
+      "notes": {"type": "string"}
+    },
+    "additionalProperties": true
+  }
+}

@@ -1,0 +1,6 @@
+benchmark_family,benchmark_source,baseline_name,task,dataset,backbone,fusion_policy,bundle_id,layer_idx,k,evidence_dim,metric_name,metric,metric_value,status,seed,seed_count,error,notes
+architecture,lora_finetune,lora_qwen35_9b,finegrained,dtd,Qwen/Qwen3.5-9B,,,,,,accuracy,0.0000,0.0000,ok,42,,,
+architecture,lora_finetune,lora_qwen35_9b,finegrained,oxford_pet,Qwen/Qwen3.5-9B,,,,,,accuracy,0.0000,0.0000,ok,42,,,
+architecture,lora_finetune,lora_qwen35_9b,strict_yesno,dtd,Qwen/Qwen3.5-9B,,,,,,f1,0.0000,0.0000,ok,42,,,
+architecture,lora_finetune,lora_qwen35_9b,population,oxford_pet,Qwen/Qwen3.5-9B,,,,,,mae,0.0000,0.0000,ok,42,,,
+architecture,lora_finetune,lora_qwen35_9b,grounded_generation,dtd,Qwen/Qwen3.5-9B,,,,,,rationale_faithful_rate,0.0000,0.0000,ok,42,,,

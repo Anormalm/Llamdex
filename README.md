@@ -708,6 +708,37 @@ Current implementation status:
 - Checkpoint compatibility guard is implemented in eval (`--enforce_checkpoint_compat 1`) to block mismatched task/checkpoint runs that previously caused collapsed metrics.
 - `llm_only` scoring for yes/no baselines is semantic (not strict token-id only), so floor baselines are meaningful.
 
+### Current Empirical Status (Provisional)
+
+Do not treat the current repository state as a single unified 5-seed benchmark table. The strongest evidence is still spread across several runs with different scopes:
+
+- March 19 DTD apples-to-apples expert sweep: best current expert comparison.
+- March 11 local matched-protocol benchmark: best controlled injection-vs-floor comparison.
+- Older Oxford-IIIT Pet sweeps: still useful for `strict_yesno`, but not equally trustworthy on every task.
+
+Strongest currently documented results:
+
+| Source | Dataset | System | Task | Metrics |
+|---|---|---|---|---|
+| March 19 apples-to-apples sweep | DTD | `router_parallel + dinov2 + Qwen/Qwen3.5-9B` | `finegrained` | `accuracy=0.7344`, `f1=0.8309` |
+| March 19 apples-to-apples sweep | DTD | `router_parallel + dinov2 + Qwen/Qwen3.5-9B` | `population` | `mae=0.0186`, `calibration_error=0.0186` |
+| March 19 apples-to-apples sweep | DTD | `router_parallel + dinov2 + Qwen/Qwen3.5-9B` | `grounded_generation` | `accuracy=0.7266`, `f1=0.7035`, `format_compliance=1.0`, `rationale_nonempty_rate=1.0`, `rationale_consistency=0.0` |
+| March 11 local matched repeat-2 | DTD | `injection` | matched local benchmark | `accuracy_mean=0.781250` |
+| March 11 local matched repeat-2 | Oxford-IIIT Pet | `injection` | matched local benchmark | `accuracy_mean=0.890625` |
+| Older Oxford sweep | Oxford-IIIT Pet | `router_parallel` | `strict_yesno` | `accuracy=0.9609` |
+
+What we can defend today:
+
+- `router_parallel` with a strong vision expert materially outperforms weak non-vision floors on meaningful tasks.
+- `dinov2` is the best current default expert for router-parallel work.
+- Population calibration is already strong on the best DTD runs (`ECE` well below `0.10`).
+
+What we should not claim yet:
+
+- No fresh all-dataset, all-task, 5-seed benchmark packet has been completed.
+- No single headline table currently supports direct comparison across DTD, Oxford-IIIT Pet, CIFAR-10, LoRA, API VLM, and grounded rationale metrics under one consistent protocol.
+- Grounded rationale formatting is now fixed in the current code path, but representative large-eval grounded metrics should be taken from fresh reruns rather than older ad hoc smoke checks.
+
 ### Local matched-protocol benchmark (repeat-2)
 
 Setup:

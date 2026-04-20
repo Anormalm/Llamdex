@@ -195,6 +195,7 @@ class FineGrainedPetDataset(Dataset):
             "label_idx": torch.tensor(int(label), dtype=torch.long),
             "task_name": "finegrained",
             "allowed_token_ids": list(self.code_to_tid.values()),
+            "code_labels": list(self.class_names),
             "rationale_keywords": self.class_names[int(label)].replace("_", " ").split(),
         }
 
@@ -310,9 +311,9 @@ def collate_task_batch(batch: List[Dict]) -> Dict:
     tokens = torch.full((len(batch), max_len), pad_id, dtype=torch.long)
     mask = torch.zeros((len(batch), max_len), dtype=torch.long)
     for i, row in enumerate(batch):
-        l = row["prompt_tokens"].size(0)
-        tokens[i, max_len - l :] = row["prompt_tokens"]
-        mask[i, max_len - l :] = row["prompt_mask"]
+        seq_len = row["prompt_tokens"].size(0)
+        tokens[i, max_len - seq_len :] = row["prompt_tokens"]
+        mask[i, max_len - seq_len :] = row["prompt_mask"]
 
     out = {
         "prompt_tokens": tokens,
@@ -336,4 +337,6 @@ def collate_task_batch(batch: List[Dict]) -> Dict:
         out["rationale_keywords"] = [x["rationale_keywords"] for x in batch]
     if "rationale_target" in batch[0]:
         out["rationale_target"] = [x["rationale_target"] for x in batch]
+    if "code_labels" in batch[0]:
+        out["code_labels"] = list(batch[0]["code_labels"])
     return out

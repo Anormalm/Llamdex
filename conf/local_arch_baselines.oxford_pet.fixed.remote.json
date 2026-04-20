@@ -1,0 +1,46 @@
+{
+  "server_models_path": "/disk1/lfhu/hf_cache",
+  "model_name": "Qwen/Qwen3.5-9B",
+  "dataset_name": "oxford_pet",
+  "data_root": "/disk1/lfhu/data",
+  "task_family": "single_image",
+  "qa_type": "label_code",
+  "population_output_mode": "integer",
+  "population_group_size": 8,
+  "batch_size": 4,
+  "max_eval_samples": 128,
+  "device": "cuda",
+  "seed": 42,
+  "expert_checkpoint": "/disk1/lfhu/runs/experts/oxford_pet_resnet18_best.pt",
+  "expert_init_weights": "imagenet",
+  "expert_kind": "classifier",
+  "expert_output_mode": "logits",
+  "caption_model_id": "Salesforce/blip-image-captioning-base",
+  "enable_llm_only": true,
+  "enable_two_stage": true,
+  "enable_rag": true,
+  "rag_db_size": 128,
+  "frozen_vlms": [
+    {
+      "model_type": "qwen25_vl",
+      "model_id": "Qwen/Qwen2.5-VL-7B-Instruct",
+      "enabled": false
+    },
+    {
+      "model_type": "internvl",
+      "model_id": "OpenGVLab/InternVL2_5-8B",
+      "enabled": false
+    }
+  ],
+  "include_injection": true,
+  "connectors_path": "/disk1/lfhu/runs/plan1_qwen35_9b_oxford_labelcode_perf_v1/best_connectors.pt",
+  "num_tokens": 4,
+  "layer_to_add": 0,
+  "evidence_dim": 256,
+  "alpha": 1.0,
+  "use_adapters": true,
+  "adapter_bottleneck": 64,
+  "inject_location": "pre_ffn",
+  "out_csv": "/disk1/lfhu/runs/local_arch_baselines.oxford_pet.fixed.remote.csv",
+  "out_json": "/disk1/lfhu/runs/local_arch_baselines.oxford_pet.fixed.remote.json"
+}

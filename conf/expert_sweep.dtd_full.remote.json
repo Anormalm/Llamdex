@@ -1,0 +1,35 @@
+{
+  "base_task_matrix_config": "/home/anormalm/Llamdex/conf/task_matrix_dtd_dinov2_full.remote.json",
+  "experts": [
+    {
+      "name": "clip",
+      "expert_type": "clip",
+      "expert_model_id": "openai/clip-vit-base-patch32",
+      "expert_output_dim": 512,
+      "enabled": true
+    },
+    {
+      "name": "siglip",
+      "expert_type": "siglip",
+      "expert_model_id": "google/siglip-base-patch16-224",
+      "expert_output_dim": 768,
+      "enabled": true
+    },
+    {
+      "name": "dinov2",
+      "expert_type": "dinov2",
+      "expert_model_id": "facebook/dinov2-base",
+      "expert_output_dim": 768,
+      "enabled": true
+    },
+    {
+      "name": "resnet18_classifier",
+      "expert_type": "resnet18_classifier",
+      "expert_model_path": "/disk1/lfhu/runs/experts/dtd_resnet18_best.pt",
+      "expert_output_dim": 47,
+      "enabled": true
+    }
+  ],
+  "out_csv": "/disk1/lfhu/runs/expert_sweep.dtd_full.remote.csv",
+  "out_json": "/disk1/lfhu/runs/expert_sweep.dtd_full.remote.json"
+}

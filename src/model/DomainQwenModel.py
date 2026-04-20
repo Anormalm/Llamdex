@@ -1,11 +1,101 @@
 from __future__ import annotations
 
-from typing import Optional, Union
+from typing import Callable, Optional, Union
 import os
+import warnings
 
 import torch
 import torch.nn as nn
 from transformers import AutoModelForCausalLM, GenerationConfig, PretrainedConfig
+
+
+class DomainQwenDecoderLayer(nn.Module):
+    """
+    Legacy Llamdex-style layer wrapper.
+
+    Before the wrapped Qwen decoder layer runs, frozen expert outputs are projected
+    to token embeddings and overwrite the rightmost reserved hidden-state slots.
+    """
+
+    def __init__(self, layer: nn.Module):
+        super().__init__()
+        self.layer = layer
+        self.experts = nn.ModuleList()
+        self.maps_to_expert_emb = nn.ModuleList()
+        self.num_experts = 0
+        self._active_expert_inputs = None
+
+    def __getattr__(self, name: str):
+        try:
+            return super().__getattr__(name)
+        except AttributeError as exc:
+            layer = self._modules.get("layer")
+            if layer is not None and hasattr(layer, name):
+                return getattr(layer, name)
+            raise exc
+
+    def add_expert_(self, expert: nn.Module, map_to_expert_emb: Optional[Callable] = None):
+        self.experts.append(expert)
+        if map_to_expert_emb is None:
+            warnings.warn("No map_to_expert_emb function provided. Direct expert_inputs are expected.")
+            map_to_expert_emb = nn.Identity()
+        self.maps_to_expert_emb.append(map_to_expert_emb if isinstance(map_to_expert_emb, nn.Module) else _CallableModule(map_to_expert_emb))
+        self.num_experts += 1
+
+    def set_active_expert_inputs_(self, expert_inputs):
+        self._active_expert_inputs = expert_inputs
+
+    def clear_active_expert_inputs_(self):
+        self._active_expert_inputs = None
+
+    def _expert_input_for(self, idx: int, hidden_states: torch.Tensor):
+        if self._active_expert_inputs is not None:
+            seq = list(self._active_expert_inputs) if isinstance(self._active_expert_inputs, (tuple, list)) else [self._active_expert_inputs]
+            return seq[min(idx, len(seq) - 1)]
+        return self.maps_to_expert_emb[idx](hidden_states)
+
+    def _run_expert(self, idx: int, hidden_states: torch.Tensor) -> torch.Tensor:
+        expert_input = self._expert_input_for(idx, hidden_states)
+        expert = self.experts[idx]
+        if isinstance(expert_input, tuple) and len(expert_input) == 2 and hasattr(expert, "forward"):
+            return expert(expert_input[0], expert_input[1])
+        if hasattr(expert, "forward_with_features"):
+            return expert.forward_with_features(expert_input)
+        return expert(expert_input)
+
+    def _inject(self, hidden_states: torch.Tensor) -> torch.Tensor:
+        if self.num_experts <= 0:
+            return hidden_states
+        expert_tokens = [self._run_expert(i, hidden_states) for i in range(self.num_experts)]
+        hidden_states_right = torch.cat(expert_tokens, dim=1).to(dtype=hidden_states.dtype, device=hidden_states.device)
+        if hidden_states_right.size(1) <= 0:
+            return hidden_states
+        if hidden_states_right.size(1) > hidden_states.size(1):
+            raise ValueError(
+                f"Expert token count {hidden_states_right.size(1)} exceeds sequence length {hidden_states.size(1)}."
+            )
+        norm = getattr(self.layer, "input_layernorm", None)
+        if norm is not None:
+            hidden_states_right = norm(hidden_states_right)
+        hidden_states_left = hidden_states[:, : hidden_states.size(1) - hidden_states_right.size(1), :]
+        return torch.cat((hidden_states_left, hidden_states_right), dim=1)
+
+    def forward(self, hidden_states: Optional[torch.Tensor] = None, *args, **kwargs):
+        if hidden_states is None:
+            if not args:
+                return self.layer(*args, **kwargs)
+            hidden_states, args = args[0], args[1:]
+        hidden_states = self._inject(hidden_states)
+        return self.layer(hidden_states, *args, **kwargs)
+
+
+class _CallableModule(nn.Module):
+    def __init__(self, fn: Callable):
+        super().__init__()
+        self.fn = fn
+
+    def forward(self, *args, **kwargs):
+        return self.fn(*args, **kwargs)
 
 
 class DomainQwenForCausalLM(nn.Module):
@@ -68,6 +158,59 @@ class DomainQwenForCausalLM(nn.Module):
         self.inject_layer_id = layer_id
         self.inject_location = inject_location
 
+    def _normalize_layer_ids(self, layer_id):
+        layers = getattr(self.model, "layers", None)
+        if layers is None:
+            raise AttributeError("Wrapped Qwen model does not expose model.layers for legacy expert injection.")
+        if layer_id is None:
+            return list(range(len(layers)))
+        if isinstance(layer_id, (list, tuple)):
+            raw_ids = list(layer_id)
+        else:
+            raw_ids = [layer_id]
+        out = []
+        for idx in raw_ids:
+            idx = int(idx)
+            if idx < 0:
+                idx = len(layers) + idx
+            if not 0 <= idx < len(layers):
+                raise ValueError(f"Invalid layer ID: {idx}")
+            out.append(idx)
+        return out
+
+    def add_expert_(self, expert: nn.Module, layer_id=None, copy: bool = True, map_to_expert_emb: Optional[Callable] = None):
+        """
+        Attach an expert using original Llamdex reserved-slot overwrite semantics.
+
+        The expert is expected to expose forward_with_features(raw_features) and
+        return (batch, num_tokens, hidden_size) token embeddings.
+        """
+        for idx in self._normalize_layer_ids(layer_id):
+            layer = self.model.layers[idx]
+            if not isinstance(layer, DomainQwenDecoderLayer):
+                layer = DomainQwenDecoderLayer(layer)
+                self.model.layers[idx] = layer
+            layer_expert = expert.clone() if copy and hasattr(expert, "clone") else expert
+            layer.add_expert_(layer_expert, map_to_expert_emb=map_to_expert_emb)
+
+    def _legacy_expert_layers(self):
+        layers = getattr(self.model, "layers", [])
+        return [layer for layer in layers if isinstance(layer, DomainQwenDecoderLayer) and layer.num_experts > 0]
+
+    def _set_layer_expert_inputs_(self, expert_inputs):
+        for layer in self._legacy_expert_layers():
+            layer.set_active_expert_inputs_(expert_inputs)
+
+    def _clear_layer_expert_inputs_(self):
+        for layer in self._legacy_expert_layers():
+            layer.clear_active_expert_inputs_()
+
+    def setup_encoder(self, layer_id: int, expert_id: int, requires_grad: bool):
+        self.model.layers[layer_id].experts[expert_id].setup_encoder(requires_grad)
+
+    def setup_decoder(self, layer_id: int, expert_id: int, requires_grad: bool):
+        self.model.layers[layer_id].experts[expert_id].setup_decoder(requires_grad)
+
     def configure_adapters_(
         self,
         use_adapters: bool = False,
@@ -105,23 +248,31 @@ class DomainQwenForCausalLM(nn.Module):
         **kwargs,
     ):
         _ = (position_ids, cache_position, expert_weight, kwargs)
+        use_layer_overwrite = expert_inputs is not None and len(self._legacy_expert_layers()) > 0
         use_external = (
             expert_inputs is not None
+            and not use_layer_overwrite
             and hasattr(self, "_external_experts")
             and isinstance(self._external_experts, nn.ModuleList)
             and len(self._external_experts) > 0
         )
-        outputs = self.base_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            past_key_values=past_key_values,
-            inputs_embeds=inputs_embeds,
-            labels=labels,
-            use_cache=use_cache,
-            output_attentions=output_attentions,
-            output_hidden_states=True if use_external else output_hidden_states,
-            return_dict=True if use_external else return_dict,
-        )
+        if use_layer_overwrite:
+            self._set_layer_expert_inputs_(expert_inputs)
+        try:
+            outputs = self.base_model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                past_key_values=past_key_values,
+                inputs_embeds=inputs_embeds,
+                labels=labels,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                output_hidden_states=True if use_external else output_hidden_states,
+                return_dict=True if use_external else return_dict,
+            )
+        finally:
+            if use_layer_overwrite:
+                self._clear_layer_expert_inputs_()
         if not use_external:
             return outputs
 

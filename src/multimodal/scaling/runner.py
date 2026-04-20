@@ -148,7 +148,10 @@ def _attach_injection_for_language(
     )
     expert = SemanticEvidenceDomainExpert(builder, projector)
     model.num_tokens = num_tokens
-    model.model.layers[layer_idx].add_expert_(expert, map_to_expert_emb=None)
+    if hasattr(model, "add_expert_"):
+        model.add_expert_(expert, layer_id=layer_idx, map_to_expert_emb=None)
+    else:
+        model.model.layers[layer_idx].add_expert_(expert, map_to_expert_emb=None)
 
 
 def _language_regression(backbone: BackboneSpec, cfg: BackboneScalingConfig) -> Dict:

@@ -1,0 +1,59 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "llamdex"
+version = "0.1.0"
+description = "Llamdex with multimodal Plan-1++ evidence injection, adapters, and benchmark runners."
+readme = "README.md"
+requires-python = ">=3.10,<3.13"
+license = { file = "LICENSE" }
+authors = [
+  { name = "Llamdex Contributors" }
+]
+dependencies = [
+  "torch>=2.3",
+  "torchvision>=0.18",
+  "transformers>=4.57.0",
+  "accelerate>=0.32.0",
+  "peft>=0.11.0",
+  "datasets>=2.20.0",
+  "huggingface_hub>=0.24.0",
+  "sentencepiece>=0.2.0",
+  "safetensors>=0.4.3",
+  "pandas>=2.2.0",
+  "scikit-learn>=1.5.0",
+  "tqdm>=4.66.0",
+  "xgboost>=2.1.0",
+  "Pillow>=10.0.0"
+]
+
+[project.optional-dependencies]
+ubuntu = [
+  "deepspeed>=0.14.0; platform_system == 'Linux'"
+]
+quant = [
+  "bitsandbytes>=0.43.0; platform_system == 'Linux'"
+]
+ubuntu-gpu = [
+  "deepspeed>=0.14.0; platform_system == 'Linux'",
+  "bitsandbytes>=0.43.0; platform_system == 'Linux'"
+]
+api = [
+  "openai>=1.30.0",
+  "requests>=2.31.0"
+]
+dev = [
+  "pytest>=8.0.0",
+  "pytest-cov>=5.0.0",
+  "black>=24.0.0",
+  "ruff>=0.5.0"
+]
+
+[tool.setuptools]
+include-package-data = true
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]

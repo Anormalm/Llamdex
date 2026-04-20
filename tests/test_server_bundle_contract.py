@@ -95,6 +95,46 @@ def test_bundle_validation_rejects_dimension_mismatch(tmp_path):
         raise AssertionError("Expected bundle compatibility validation to fail.")
 
 
+def test_expert_only_bundle_reconstructs_fresh_connector_modules(tmp_path):
+    semantic_expert = _build_semantic_expert()
+    fusion_policy = build_fusion_policy("post_attn_router_parallel", hidden_size=8)
+    bundle_dir = tmp_path / "expert_only_bundle"
+    save_expert_bundle(
+        str(bundle_dir),
+        encoder_spec={
+            "expert_type": "tabular",
+            "model_id": None,
+            "model_path": None,
+            "output_dim": 6,
+            "cache_dir": "/disk1/lfhu/hf_cache",
+            "use_runtime_detector": False,
+        },
+        semantic_expert=semantic_expert,
+        fusion_policy=fusion_policy,
+        upload_scope="expert_only",
+        metadata={"model_name": "Qwen/Qwen3.5-9B", "layer_idx": 3, "feature_format": "tabular"},
+    )
+
+    loaded = load_expert_bundle(
+        str(bundle_dir),
+        compatibility=BundleCompatibilitySpec(
+            hidden_size=8,
+            evidence_dim=4,
+            num_tokens=2,
+            expert_output_dim=6,
+            model_name="Qwen/Qwen3.5-9B",
+            layer_idx=3,
+            expected_feature_format="tabular",
+        ),
+    )
+    assert loaded["metadata"]["upload_scope"] == "expert_only"
+    sample = {"tabular": torch.randn(2, 6)}
+    tokens = loaded["semantic_expert"].forward_with_features(sample)
+    assert tokens.shape == (2, 2, 8)
+    assert loaded["fusion_policy"].policy_name == "post_attn_router_parallel"
+    assert all(not p.requires_grad for p in loaded["semantic_expert"].evidence_builder.expert_encoder.parameters())
+
+
 def test_service_response_contract_exposes_trace_bundle_and_audit():
     runtime = BundleServiceRuntime(
         semantic_expert=_build_semantic_expert(),

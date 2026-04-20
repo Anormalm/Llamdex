@@ -17,6 +17,8 @@ from src.multimodal.injection import EvidenceProjector, SemanticEvidenceDomainEx
 BUNDLE_SCHEMA_VERSION = "1.0"
 BUNDLE_WEIGHTS_FILE = "bundle.pt"
 BUNDLE_MANIFEST_FILE = "bundle_meta.json"
+UPLOAD_SCOPE_FULL = "full_bundle"
+UPLOAD_SCOPE_EXPERT_ONLY = "expert_only"
 
 
 class BundleValidationError(ValueError):
@@ -188,21 +190,22 @@ def save_expert_bundle(
     preprocessing_config: Optional[Dict[str, Any]] = None,
     label_schema: Optional[Dict[str, Any]] = None,
     metadata: Optional[Dict[str, Any]] = None,
+    upload_scope: str = UPLOAD_SCOPE_FULL,
 ) -> str:
     os.makedirs(bundle_dir, exist_ok=True)
+    upload_scope = str(upload_scope or UPLOAD_SCOPE_FULL).strip().lower()
+    if upload_scope not in {UPLOAD_SCOPE_FULL, UPLOAD_SCOPE_EXPERT_ONLY}:
+        raise BundleValidationError(f"Unsupported upload_scope={upload_scope!r}.")
     manifest = _normalize_manifest(
         encoder_spec=encoder_spec,
         semantic_expert=semantic_expert,
         fusion_policy=fusion_policy,
         preprocessing_config=preprocessing_config if preprocessing_config is not None else normalization_stats,
         label_schema=label_schema,
-        metadata=metadata,
+        metadata={**dict(metadata or {}), "upload_scope": upload_scope},
     )
     payload = {
         "encoder_state_dict": semantic_expert.evidence_builder.expert_encoder.state_dict(),
-        "builder_state_dict": semantic_expert.evidence_builder.state_dict(),
-        "projector_state_dict": semantic_expert.projector.state_dict(),
-        "fusion_policy_state_dict": fusion_policy.state_dict() if fusion_policy is not None else {},
         "preprocessing_config": manifest.preprocessing_config,
         "normalization_stats": manifest.preprocessing_config,
         "label_schema": manifest.label_schema,
@@ -212,6 +215,10 @@ def save_expert_bundle(
             "bundle_id": manifest.bundle_id,
         },
     }
+    if upload_scope == UPLOAD_SCOPE_FULL:
+        payload["builder_state_dict"] = semantic_expert.evidence_builder.state_dict()
+        payload["projector_state_dict"] = semantic_expert.projector.state_dict()
+        payload["fusion_policy_state_dict"] = fusion_policy.state_dict() if fusion_policy is not None else {}
     weights_path = os.path.join(bundle_dir, BUNDLE_WEIGHTS_FILE)
     torch.save(payload, weights_path)
     manifest.payload_sha256 = _sha256_file(weights_path)
@@ -254,6 +261,7 @@ def load_expert_bundle(
             )
 
     payload = torch.load(weights_path, map_location="cpu")
+    upload_scope = str(payload.get("metadata", {}).get("upload_scope") or manifest.metadata.get("upload_scope") or UPLOAD_SCOPE_FULL).strip().lower()
     enc_spec = ExpertEncoderSpec(**manifest.encoder_spec)
     encoder = build_expert_encoder(enc_spec)
     encoder.load_state_dict(payload.get("encoder_state_dict", {}), strict=False)
@@ -266,7 +274,8 @@ def load_expert_bundle(
         evidence_dim=int(manifest.evidence_dim),
         output_dim=int(manifest.expert_output_dim),
     )
-    builder.load_state_dict(payload.get("builder_state_dict", {}), strict=False)
+    if upload_scope == UPLOAD_SCOPE_FULL:
+        builder.load_state_dict(payload.get("builder_state_dict", {}), strict=False)
     builder.eval()
 
     projector = EvidenceProjector(
@@ -275,14 +284,16 @@ def load_expert_bundle(
         num_tokens=int(manifest.projector_num_tokens),
         alpha=float(manifest.projector_alpha),
     )
-    projector.load_state_dict(payload.get("projector_state_dict", {}), strict=False)
+    if upload_scope == UPLOAD_SCOPE_FULL:
+        projector.load_state_dict(payload.get("projector_state_dict", {}), strict=False)
     projector.eval()
 
     semantic_expert = SemanticEvidenceDomainExpert(builder, projector)
     semantic_expert.eval()
 
     policy = build_fusion_policy(manifest.fusion_policy, hidden_size=projector.hidden_size)
-    policy.load_state_dict(payload.get("fusion_policy_state_dict", {}), strict=False)
+    if upload_scope == UPLOAD_SCOPE_FULL:
+        policy.load_state_dict(payload.get("fusion_policy_state_dict", {}), strict=False)
     policy.eval()
     for module in (semantic_expert.evidence_builder.expert_encoder,):
         for p in module.parameters():

@@ -1,0 +1,71 @@
+{
+  "server_models_path": "/disk1/lfhu/hf_cache",
+  "model_name": "Qwen/Qwen3.5-9B",
+  "data_root": "/disk1/lfhu/data",
+  "seed": 42,
+  "device": "cuda",
+  "learning_rate": 0.0001,
+  "evidence_dim": 128,
+  "num_tokens": 2,
+  "layer_idx": 0,
+  "alpha": 1.0,
+  "expert_type": "dinov2",
+  "expert_model_id": "facebook/dinov2-base",
+  "expert_output_dim": 768,
+  "use_runtime_detector": false,
+  "fusion_policy": "pre_attn_overwrite",
+  "upload_scope": "expert_only",
+  "baseline_modes": [
+    "overwrite"
+  ],
+  "out_csv": "/disk1/lfhu/runs/task_matrix_dtd_dinov2_legacy_upload.gpu7_smoke.remote.csv",
+  "out_json": "/disk1/lfhu/runs/task_matrix_dtd_dinov2_legacy_upload.gpu7_smoke.remote.json",
+  "save_bundle_dir": "/disk1/lfhu/runs/bundles_legacy_overwrite_uploaded_qwen35_gpu7_smoke",
+  "tasks": [
+    {
+      "name": "finegrained",
+      "image_dataset_name": "dtd",
+      "train_steps": 20,
+      "max_train_samples": 128,
+      "max_eval_samples": 64,
+      "batch_size": 1,
+      "constrained_decoding": true
+    },
+    {
+      "name": "strict_yesno",
+      "image_dataset_name": "dtd",
+      "train_steps": 20,
+      "max_train_samples": 128,
+      "max_eval_samples": 64,
+      "batch_size": 1,
+      "constrained_decoding": true
+    },
+    {
+      "name": "population",
+      "image_dataset_name": "dtd",
+      "train_steps": 20,
+      "max_train_samples": 64,
+      "max_eval_samples": 32,
+      "batch_size": 1,
+      "constrained_decoding": true,
+      "population_group_size": 8
+    },
+    {
+      "name": "grounded_generation",
+      "image_dataset_name": "dtd",
+      "train_steps": 12,
+      "max_train_samples": 64,
+      "max_eval_samples": 32,
+      "batch_size": 1,
+      "constrained_decoding": true,
+      "gen_max_new_tokens": 16,
+      "gen_temperature": 0.0,
+      "gen_top_p": 0.9,
+      "gen_repetition_penalty": 1.05,
+      "gen_do_sample": false,
+      "min_rationale_chars": 8,
+      "min_rationale_keyword_score": 0.5,
+      "strict_answer_code": true
+    }
+  ]
+}

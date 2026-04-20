@@ -123,6 +123,8 @@ def test_run_task_matrix_repeat_seeds_emits_aggregate_row(monkeypatch, tmp_path)
     assert rows[1]["seed"] == 43
     agg = rows[2]
     assert agg["seed"] == "aggregate"
+    assert agg["metric"] == 0.5
+    assert agg["accuracy"] == 0.5
     assert agg["metric_mean"] == 0.5
 
 
@@ -149,6 +151,64 @@ def test_run_task_matrix_router_parallel_respects_pre_ffn_policy(monkeypatch, tm
     )
     rows = run_task_matrix(cfg)
     assert rows[0]["fusion_policy"] == "pre_ffn_router_parallel"
+
+
+def test_run_task_matrix_router_parallel_respects_post_attn_layers_policy(monkeypatch, tmp_path):
+    import src.multimodal.task_matrix.runner as runner
+
+    monkeypatch.setattr(runner, "_build_model_tokenizer", lambda cfg: (_DummyModel(), object()))
+    monkeypatch.setattr(runner, "_attach_connector", lambda cfg, model, baseline_mode: None)
+    monkeypatch.setattr(runner, "_build_task_loaders", lambda task, tokenizer, data_root, seed: (["train"], ["eval"]))
+    monkeypatch.setattr(runner, "_train_connector", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_eval_task",
+        lambda model, runtime, tokenizer, eval_loader, task, cfg, device, baseline_mode: {"accuracy": 0.5},
+    )
+
+    cfg = TaskMatrixConfig(
+        baseline_modes=["router_parallel"],
+        fusion_policy="post_attn_router_layers",
+        tasks=[TaskSpec(name="finegrained", train_steps=0, max_train_samples=1, max_eval_samples=1, batch_size=1)],
+        out_csv=str(tmp_path / "rows.csv"),
+        out_json=str(tmp_path / "rows.json"),
+        device="cpu",
+    )
+    rows = run_task_matrix(cfg)
+    assert rows[0]["fusion_policy"] == "post_attn_router_layers"
+
+
+def test_run_task_matrix_vqa_rows_report_hf_dataset_name(monkeypatch, tmp_path):
+    import src.multimodal.task_matrix.runner as runner
+
+    monkeypatch.setattr(runner, "_build_model_tokenizer", lambda cfg: (_DummyModel(), object()))
+    monkeypatch.setattr(runner, "_attach_connector", lambda cfg, model, baseline_mode: None)
+    monkeypatch.setattr(runner, "_build_task_loaders", lambda task, tokenizer, data_root, seed: (["train"], ["eval"]))
+    monkeypatch.setattr(runner, "_train_connector", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_eval_task",
+        lambda model, runtime, tokenizer, eval_loader, task, cfg, device, baseline_mode: {"accuracy": 0.5},
+    )
+
+    cfg = TaskMatrixConfig(
+        baseline_modes=["llm_only"],
+        tasks=[
+            TaskSpec(
+                name="vqa",
+                vqa_hf_dataset_name="Graphcore/gqa-lxmert",
+                max_train_samples=1,
+                max_eval_samples=1,
+                batch_size=1,
+                train_steps=0,
+            )
+        ],
+        out_csv=str(tmp_path / "rows.csv"),
+        out_json=str(tmp_path / "rows.json"),
+        device="cpu",
+    )
+    rows = run_task_matrix(cfg)
+    assert rows[0]["dataset"] == "Graphcore/gqa-lxmert"
 
 
 def test_attach_connector_loaded_pre_ffn_registers_hook_and_freezes_semantic_expert(monkeypatch):
