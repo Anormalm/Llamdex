@@ -8,6 +8,7 @@ def test_train_args_defaults_match_adapter_style_surface():
     assert a.inject_location == "layer_input"
     assert a.fusion_policy == "post_attn_router_parallel"
     assert a.tune_layernorm is False
+    assert a.use_pre_router is False
 
 
 def test_eval_args_defaults_match_adapter_style_surface():
@@ -16,3 +17,4 @@ def test_eval_args_defaults_match_adapter_style_surface():
     assert a.inject_location == "layer_input"
     assert a.fusion_policy == "post_attn_router_parallel"
     assert a.tune_layernorm is False
+    assert a.use_pre_router is False

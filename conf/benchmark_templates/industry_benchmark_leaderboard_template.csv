@@ -1,0 +1,5 @@
+model_name,model_variant,fusion_policy,run_id,date_utc,vision_macro,text_macro,safety_macro,overall_macro,overall_rank,mean_latency_ms_per_sample,mean_throughput_sps,mean_cost_usd_per_1k_samples,notes
+YourModel,default_preffn,pre_ffn_router_parallel,run_001,2026-04-23,0.000,0.000,0.000,0.000,1,0.000,0.000,0.000,
+YourModel,specialized_postattn,post_attn_router_layers,run_002,2026-04-23,0.000,0.000,0.000,0.000,2,0.000,0.000,0.000,
+YourModel,hybrid_task_routed,hybrid_task_routed,run_003,2026-04-23,0.000,0.000,0.000,0.000,3,0.000,0.000,0.000,
+ReferenceModel,api_reference,none,run_ref_001,2026-04-23,0.000,0.000,0.000,0.000,4,0.000,0.000,0.000,

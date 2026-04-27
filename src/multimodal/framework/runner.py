@@ -268,7 +268,7 @@ def run_single_experiment(cfg: AblationConfig) -> Dict[str, float]:
 
 
 def _write_rows(rows: List[Dict], out_csv: str, out_json: str):
-    os.makedirs(os.path.dirname(out_csv), exist_ok=True)
+    os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
     keys = []
     for r in rows:
         for k in r.keys():

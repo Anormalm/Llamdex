@@ -1,0 +1,75 @@
+{
+  "server_models_path": "/disk1/lfhu/hf_cache",
+  "model_name": "Qwen/Qwen3.5-9B",
+  "data_root": "/disk1/lfhu/data",
+  "seed": 42,
+  "device": "cuda",
+  "learning_rate": 0.0001,
+  "weight_decay": 0.01,
+  "grad_clip_norm": 1.0,
+  "evidence_dim": 128,
+  "num_tokens": 2,
+  "layer_idx": 0,
+  "alpha": 1.0,
+  "expert_type": "dinov2",
+  "expert_model_id": "facebook/dinov2-base",
+  "expert_output_dim": 768,
+  "use_runtime_detector": false,
+  "fusion_policy": "post_attn_router_parallel",
+  "upload_scope": "expert_only",
+  "baseline_modes": [
+    "router_parallel"
+  ],
+  "tasks": [
+    {
+      "name": "finegrained",
+      "image_dataset_name": "dtd",
+      "train_steps": 60,
+      "max_train_samples": 256,
+      "max_eval_samples": 128,
+      "batch_size": 2,
+      "constrained_decoding": true
+    },
+    {
+      "name": "strict_yesno",
+      "image_dataset_name": "dtd",
+      "train_steps": 60,
+      "max_train_samples": 256,
+      "max_eval_samples": 128,
+      "batch_size": 2,
+      "constrained_decoding": true
+    },
+    {
+      "name": "population",
+      "image_dataset_name": "dtd",
+      "train_steps": 60,
+      "max_train_samples": 192,
+      "max_eval_samples": 96,
+      "batch_size": 2,
+      "constrained_decoding": true,
+      "population_group_size": 8
+    },
+    {
+      "name": "grounded_generation",
+      "image_dataset_name": "dtd",
+      "train_steps": 40,
+      "max_train_samples": 192,
+      "max_eval_samples": 96,
+      "batch_size": 1,
+      "constrained_decoding": true,
+      "gen_max_new_tokens": 16,
+      "gen_temperature": 0.0,
+      "gen_top_p": 0.9,
+      "gen_repetition_penalty": 1.05,
+      "gen_do_sample": false,
+      "min_rationale_chars": 8,
+      "min_rationale_keyword_score": 0.5,
+      "strict_answer_code": true
+    }
+  ],
+  "use_pre_router": false,
+  "pre_router_mode": "global_feature",
+  "task_conditioning": false,
+  "out_csv": "/disk1/lfhu/runs/task_matrix_dtd_ambitious.no_pr.csv",
+  "out_json": "/disk1/lfhu/runs/task_matrix_dtd_ambitious.no_pr.json"
+}

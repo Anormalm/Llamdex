@@ -11,7 +11,7 @@ import torch.nn as nn
 
 from src.multimodal.framework.builders import EncoderEvidenceBuilder
 from src.multimodal.framework.expert_encoders import ExpertEncoderSpec, build_expert_encoder
-from src.multimodal.injection import EvidenceProjector, SemanticEvidenceDomainExpert, build_fusion_policy
+from src.multimodal.injection import EvidencePreRouter, EvidenceProjector, SemanticEvidenceDomainExpert, build_fusion_policy
 
 
 BUNDLE_SCHEMA_VERSION = "1.0"
@@ -49,6 +49,7 @@ class BundleManifest:
     projector_num_tokens: int = 0
     projector_alpha: float = 1.0
     fusion_policy: str = "pre_attn_overwrite"
+    pre_router_config: Dict[str, Any] = field(default_factory=dict)
     preprocessing_config: Dict[str, Any] = field(default_factory=dict)
     label_schema: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
@@ -74,6 +75,17 @@ def _sha256_file(path: str) -> str:
         for chunk in iter(lambda: f.read(1024 * 1024), b""):
             h.update(chunk)
     return h.hexdigest()
+
+
+def _load_torch_weights(path: str, *, map_location: str = "cpu"):
+    """
+    Prefer tensor-only deserialization to reduce pickle attack surface.
+    Fall back for older torch builds that do not support `weights_only`.
+    """
+    try:
+        return torch.load(path, map_location=map_location, weights_only=True)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
 
 
 def _infer_feature_format(encoder_spec: Dict[str, Any], metadata: Dict[str, Any]) -> str:
@@ -110,6 +122,18 @@ def _normalize_manifest(
         projector_num_tokens=int(semantic_expert.projector.num_tokens),
         projector_alpha=float(semantic_expert.projector.alpha),
         fusion_policy=str(getattr(fusion_policy, "policy_name", "pre_attn_overwrite")),
+        pre_router_config=(
+            {
+                "enabled": True,
+                "mode": str(getattr(semantic_expert.pre_router, "mode", "global_feature")),
+                "hidden_dim": int(getattr(getattr(semantic_expert.pre_router, "global_head", None), "in_features", 0)),
+                "task_conditioning": bool(getattr(semantic_expert.pre_router, "task_conditioning", False)),
+                "task_embedding_dim": int(getattr(semantic_expert.pre_router, "task_embedding_dim", 0)),
+                "max_task_ids": int(getattr(semantic_expert.pre_router, "max_task_ids", 32)),
+            }
+            if getattr(semantic_expert, "pre_router", None) is not None
+            else {"enabled": False}
+        ),
         preprocessing_config=dict(preprocessing_config or {}),
         label_schema=dict(label_schema or {}),
         metadata=meta,
@@ -206,6 +230,7 @@ def save_expert_bundle(
     )
     payload = {
         "encoder_state_dict": semantic_expert.evidence_builder.expert_encoder.state_dict(),
+        "pre_router_state_dict": semantic_expert.pre_router.state_dict() if getattr(semantic_expert, "pre_router", None) is not None else None,
         "preprocessing_config": manifest.preprocessing_config,
         "normalization_stats": manifest.preprocessing_config,
         "label_schema": manifest.label_schema,
@@ -260,7 +285,7 @@ def load_expert_bundle(
                 f"Bundle checksum mismatch for {weights_path}: expected={manifest.payload_sha256}, actual={actual}."
             )
 
-    payload = torch.load(weights_path, map_location="cpu")
+    payload = _load_torch_weights(weights_path, map_location="cpu")
     upload_scope = str(payload.get("metadata", {}).get("upload_scope") or manifest.metadata.get("upload_scope") or UPLOAD_SCOPE_FULL).strip().lower()
     enc_spec = ExpertEncoderSpec(**manifest.encoder_spec)
     encoder = build_expert_encoder(enc_spec)
@@ -288,7 +313,20 @@ def load_expert_bundle(
         projector.load_state_dict(payload.get("projector_state_dict", {}), strict=False)
     projector.eval()
 
-    semantic_expert = SemanticEvidenceDomainExpert(builder, projector)
+    pre_router = None
+    pr_cfg = manifest.pre_router_config or {}
+    if bool(pr_cfg.get("enabled")):
+        pre_router = EvidencePreRouter(
+            evidence_dim=int(manifest.evidence_dim),
+            mode=str(pr_cfg.get("mode", "global_feature")),
+            hidden_dim=max(8, int(pr_cfg.get("hidden_dim", 128) or 128)),
+            task_conditioning=bool(pr_cfg.get("task_conditioning", False)),
+            task_embedding_dim=max(1, int(pr_cfg.get("task_embedding_dim", 16) or 16)),
+            max_task_ids=max(1, int(pr_cfg.get("max_task_ids", 32) or 32)),
+        )
+        if payload.get("pre_router_state_dict"):
+            pre_router.load_state_dict(payload.get("pre_router_state_dict") or {}, strict=False)
+    semantic_expert = SemanticEvidenceDomainExpert(builder, projector, pre_router=pre_router)
     semantic_expert.eval()
 
     policy = build_fusion_policy(manifest.fusion_policy, hidden_size=projector.hidden_size)

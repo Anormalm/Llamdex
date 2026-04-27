@@ -413,7 +413,7 @@ def _eval_api_model(
 
 
 def _save(rows: List[Dict], out_csv: str, out_json: str):
-    os.makedirs(os.path.dirname(out_csv), exist_ok=True)
+    os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
     keys: List[str] = []
     for r in rows:
         for k in r.keys():

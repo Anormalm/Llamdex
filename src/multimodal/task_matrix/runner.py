@@ -5,9 +5,10 @@ import json
 import math
 import os
 import re
+import time
 import traceback
 from contextlib import contextmanager
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Dict, List, Optional
 from unittest.mock import patch
 
@@ -21,10 +22,12 @@ from src.model.DomainQwenModel import DomainQwenForCausalLM
 from src.multimodal.framework.builders import EncoderEvidenceBuilder
 from src.multimodal.framework.expert_encoders import ExpertEncoderSpec, build_expert_encoder
 from src.multimodal.injection import (
+    EvidencePreRouter,
     EvidenceProjector,
     FusionContext,
     SemanticEvidenceDomainExpert,
     build_fusion_policy,
+    task_name_to_id,
 )
 from src.multimodal.server import BundleCompatibilitySpec, load_expert_bundle, save_expert_bundle
 from src.multimodal.task_matrix.datasets import (
@@ -72,6 +75,7 @@ class TaskSpec:
     min_rationale_chars: int = 8
     min_rationale_keyword_score: float = 0.5
     strict_answer_code: bool = True
+    prompt_template_style: str = "legacy"  # legacy|compact
 
 
 @dataclass
@@ -97,7 +101,7 @@ class TaskMatrixConfig:
     expert_output_dim: int = 512
     use_runtime_detector: bool = False
     local_files_only: bool = False
-    fusion_policy: str = "post_attn_router_parallel"  # pre_attn_overwrite|post_attn_router_parallel|post_attn_router_layers|pre_ffn_router_parallel
+    fusion_policy: str = "pre_ffn_router_parallel"  # pre_attn_overwrite|post_attn_router_parallel|post_attn_router_layers|pre_ffn_router_parallel
     baseline_modes: List[str] = field(default_factory=lambda: ["router_parallel"])
     save_bundle_dir: Optional[str] = None
     load_bundle_dir: Optional[str] = None
@@ -110,6 +114,15 @@ class TaskMatrixConfig:
     normalization_stats: Optional[Dict[str, object]] = None
     repeat_seeds: List[int] = field(default_factory=list)
     aggregate_seed_metrics: bool = True
+    use_pre_router: bool = True
+    pre_router_mode: str = "global_feature"
+    pre_router_hidden_dim: int = 128
+    task_conditioning: bool = True
+    pre_router_task_embedding_dim: int = 16
+    pre_router_max_task_ids: int = 32
+    joint_score_latency_weight: float = 0.03
+    joint_score_format_weight: float = 0.25
+    joint_score_instability_weight: float = 0.5
     tasks: List[TaskSpec] = field(default_factory=lambda: [TaskSpec(name="finegrained")])
     out_csv: str = "/disk1/lfhu/runs/task_matrix_results.csv"
     out_json: str = "/disk1/lfhu/runs/task_matrix_results.json"
@@ -200,10 +213,23 @@ def _fusion_policy_for_mode(cfg: TaskMatrixConfig, mode: str) -> str:
         return "pre_attn_overwrite"
     if mode == "router_parallel":
         preferred = str(getattr(cfg, "fusion_policy", "post_attn_router_parallel")).strip().lower()
+        if preferred == "hybrid_task_routed":
+            return "pre_ffn_router_parallel"
         if preferred in {"post_attn_router_parallel", "post_attn_router_layers", "post_attn_router_all_layers", "pre_ffn_router_parallel"}:
             return preferred
         return "post_attn_router_parallel"
     return "post_attn_router_parallel"
+
+
+def _resolve_cfg_for_task(cfg: TaskMatrixConfig, task: TaskSpec, baseline_mode: str) -> TaskMatrixConfig:
+    if baseline_mode != "router_parallel":
+        return cfg
+    preferred = str(getattr(cfg, "fusion_policy", "post_attn_router_parallel")).strip().lower()
+    if preferred != "hybrid_task_routed":
+        return cfg
+    task_name = str(getattr(task, "name", "")).strip().lower()
+    routed = "post_attn_router_layers" if task_name == "grounded_generation" else "pre_ffn_router_parallel"
+    return replace(cfg, fusion_policy=routed)
 
 
 def _build_model_tokenizer(cfg: TaskMatrixConfig):
@@ -277,6 +303,15 @@ def _attach_connector(cfg: TaskMatrixConfig, model, baseline_mode: str) -> Optio
             ),
         )
         expert = loaded["semantic_expert"]
+        if bool(getattr(cfg, "use_pre_router", False)) and getattr(expert, "pre_router", None) is None:
+            expert.pre_router = EvidencePreRouter(
+                evidence_dim=int(cfg.evidence_dim),
+                mode=str(getattr(cfg, "pre_router_mode", "global_feature")),
+                hidden_dim=int(getattr(cfg, "pre_router_hidden_dim", 128)),
+                task_conditioning=bool(getattr(cfg, "task_conditioning", False)),
+                task_embedding_dim=int(getattr(cfg, "pre_router_task_embedding_dim", 16)),
+                max_task_ids=int(getattr(cfg, "pre_router_max_task_ids", 32)),
+            )
         fusion_policy = loaded["fusion_policy"]
         manifest = loaded.get("manifest")
         policy_name = manifest.fusion_policy if manifest is not None else getattr(fusion_policy, "policy_name", fusion_policy_name)
@@ -323,7 +358,17 @@ def _attach_connector(cfg: TaskMatrixConfig, model, baseline_mode: str) -> Optio
         num_tokens=cfg.num_tokens,
         alpha=cfg.alpha,
     )
-    expert = SemanticEvidenceDomainExpert(builder, projector)
+    pre_router = None
+    if bool(getattr(cfg, "use_pre_router", False)):
+        pre_router = EvidencePreRouter(
+            evidence_dim=int(cfg.evidence_dim),
+            mode=str(getattr(cfg, "pre_router_mode", "global_feature")),
+            hidden_dim=int(getattr(cfg, "pre_router_hidden_dim", 128)),
+            task_conditioning=bool(getattr(cfg, "task_conditioning", False)),
+            task_embedding_dim=int(getattr(cfg, "pre_router_task_embedding_dim", 16)),
+            max_task_ids=int(getattr(cfg, "pre_router_max_task_ids", 32)),
+        )
+    expert = SemanticEvidenceDomainExpert(builder, projector, pre_router=pre_router)
     fusion_policy = build_fusion_policy(fusion_policy_name, hidden_size=model.config.hidden_size)
     inject_via_layer = False
     if fusion_policy_name == "pre_attn_overwrite":
@@ -364,6 +409,7 @@ def _build_task_loaders(task: TaskSpec, tokenizer, data_root: str, seed: int):
             train=True,
             max_samples=task.max_train_samples,
             dataset_name=task.image_dataset_name,
+            prompt_template_style=task.prompt_template_style,
         )
         eval_ds = FineGrainedPetDataset(
             root=data_root,
@@ -371,6 +417,7 @@ def _build_task_loaders(task: TaskSpec, tokenizer, data_root: str, seed: int):
             train=False,
             max_samples=task.max_eval_samples,
             dataset_name=task.image_dataset_name,
+            prompt_template_style=task.prompt_template_style,
         )
     elif task.name == "population":
         train_ds = PopulationBagDataset(
@@ -381,6 +428,7 @@ def _build_task_loaders(task: TaskSpec, tokenizer, data_root: str, seed: int):
             group_size=task.population_group_size,
             max_groups=task.max_train_samples,
             seed=seed,
+            prompt_template_style=task.prompt_template_style,
         )
         eval_ds = PopulationBagDataset(
             root=data_root,
@@ -390,6 +438,7 @@ def _build_task_loaders(task: TaskSpec, tokenizer, data_root: str, seed: int):
             group_size=task.population_group_size,
             max_groups=task.max_eval_samples,
             seed=seed + 1,
+            prompt_template_style=task.prompt_template_style,
         )
     elif task.name == "grounded_generation":
         train_ds = GroundedGenerationDataset(
@@ -398,6 +447,7 @@ def _build_task_loaders(task: TaskSpec, tokenizer, data_root: str, seed: int):
             train=True,
             max_samples=task.max_train_samples,
             dataset_name=task.image_dataset_name,
+            prompt_template_style=task.prompt_template_style,
         )
         eval_ds = GroundedGenerationDataset(
             root=data_root,
@@ -405,6 +455,7 @@ def _build_task_loaders(task: TaskSpec, tokenizer, data_root: str, seed: int):
             train=False,
             max_samples=task.max_eval_samples,
             dataset_name=task.image_dataset_name,
+            prompt_template_style=task.prompt_template_style,
         )
     elif task.name == "strict_yesno":
         train_ds = StrictYesNoPetDataset(
@@ -414,6 +465,7 @@ def _build_task_loaders(task: TaskSpec, tokenizer, data_root: str, seed: int):
             max_samples=task.max_train_samples,
             seed=seed,
             dataset_name=task.image_dataset_name,
+            prompt_template_style=task.prompt_template_style,
         )
         eval_ds = StrictYesNoPetDataset(
             root=data_root,
@@ -422,6 +474,7 @@ def _build_task_loaders(task: TaskSpec, tokenizer, data_root: str, seed: int):
             max_samples=task.max_eval_samples,
             seed=seed + 1,
             dataset_name=task.image_dataset_name,
+            prompt_template_style=task.prompt_template_style,
         )
     else:
         raise ValueError(f"Unsupported task name: {task.name}")
@@ -484,6 +537,32 @@ def _expert_input_from_batch(batch: Dict, device: torch.device, expert_type: str
     return {"images": batch["images"].to(device)}
 
 
+def _task_ids_for_batch(cfg: TaskMatrixConfig, batch: Dict, device: torch.device) -> Optional[torch.Tensor]:
+    if not bool(getattr(cfg, "task_conditioning", False)):
+        return None
+    bsz = int(batch["prompt_tokens"].size(0))
+    raw_task_name = batch.get("task_name", "")
+    if isinstance(raw_task_name, (list, tuple)):
+        task_name = str(raw_task_name[0] if len(raw_task_name) > 0 else "").strip().lower()
+    else:
+        task_name = str(raw_task_name).strip().lower()
+    task_name = task_name or "single_label"
+    task_id = task_name_to_id(task_name, max_task_ids=int(getattr(cfg, "pre_router_max_task_ids", 32)))
+    return torch.full((bsz,), int(task_id), dtype=torch.long, device=device)
+
+
+def _set_expert_task_context(runtime: Optional[RuntimeConnector], task_ids: Optional[torch.Tensor]) -> None:
+    if runtime is None:
+        return
+    expert = runtime.semantic_expert
+    if getattr(expert, "pre_router", None) is None:
+        return
+    if task_ids is None:
+        expert.clear_task_context()
+    else:
+        expert.set_task_context(task_id=task_ids)
+
+
 def _unique_params(*param_groups):
     seen = set()
     out = []
@@ -508,25 +587,26 @@ def _apply_fusion_policy(
     expert_input,
     task_name: str,
     allowed_token_ids: Optional[List[int]],
+    task_ids: Optional[torch.Tensor] = None,
 ):
     policy_name = getattr(runtime.fusion_policy, "policy_name", "")
     z_ctx = None
     if policy_name != "pre_ffn_router_parallel":
         z = runtime.semantic_expert.evidence_builder(expert_input)
-        z_tokens = runtime.semantic_expert.projector(z)
+        z_tokens = runtime.semantic_expert.project_from_evidence(z, task_id=task_ids)
         z_ctx = z_tokens.mean(dim=1)
     ctx = FusionContext(task_name=task_name, allowed_token_ids=allowed_token_ids)
     return runtime.fusion_policy.forward_logits(model=model, outputs=outputs, logits=logits, z_ctx=z_ctx, ctx=ctx)
 
 
-def _set_router_context_if_needed(runtime: Optional[RuntimeConnector], expert_input) -> bool:
+def _set_router_context_if_needed(runtime: Optional[RuntimeConnector], expert_input, task_ids: Optional[torch.Tensor] = None) -> bool:
     if runtime is None or expert_input is None or not hasattr(runtime.fusion_policy, "set_context"):
         return False
     policy_name = getattr(runtime.fusion_policy, "policy_name", "")
     if policy_name not in {"pre_ffn_router_parallel", "post_attn_router_layers", "post_attn_router_all_layers"}:
         return False
     z = runtime.semantic_expert.evidence_builder(expert_input)
-    z_tokens = runtime.semantic_expert.projector(z)
+    z_tokens = runtime.semantic_expert.project_from_evidence(z, task_id=task_ids)
     runtime.fusion_policy.set_context(z_tokens.mean(dim=1))
     return True
 
@@ -543,7 +623,9 @@ def _forward_logits_for_batch(
     mask = batch["prompt_mask"].to(device)
     expert_input = None if baseline_mode in {"llm_only", "text_prompt_only"} else _expert_input_from_batch(batch, device, cfg.expert_type)
     policy_name = getattr(runtime.fusion_policy, "policy_name", "") if runtime is not None else ""
-    context_was_set = _set_router_context_if_needed(runtime, expert_input)
+    task_ids = _task_ids_for_batch(cfg, batch, device) if runtime is not None else None
+    _set_expert_task_context(runtime, task_ids)
+    context_was_set = _set_router_context_if_needed(runtime, expert_input, task_ids=task_ids)
     try:
         model_out = model(
             tokens,
@@ -556,6 +638,7 @@ def _forward_logits_for_batch(
     finally:
         if context_was_set and runtime is not None and hasattr(runtime.fusion_policy, "clear_context"):
             runtime.fusion_policy.clear_context()
+        _set_expert_task_context(runtime, None)
     logits = model_out.logits[:, -1, :]
     if baseline_mode == "router_parallel" and runtime is not None:
         logits = _apply_fusion_policy(
@@ -565,7 +648,8 @@ def _forward_logits_for_batch(
             logits=logits,
             expert_input=expert_input,
             task_name=batch.get("task_name", ""),
-            allowed_token_ids=batch.get("allowed_token_ids")
+            allowed_token_ids=batch.get("allowed_token_ids"),
+            task_ids=task_ids,
         )
     return logits
 
@@ -660,7 +744,12 @@ def _generate_rationale(
             mask = torch.cat([mask, torch.ones_like(prefix)], dim=1)
     eos_id = tokenizer.eos_token_id
     policy_name = getattr(runtime.fusion_policy, "policy_name", "")
-    context_was_set = _set_router_context_if_needed(runtime, expert_input)
+    task_ids = None
+    if bool(getattr(cfg, "task_conditioning", False)):
+        task_id = task_name_to_id(task_name, max_task_ids=int(getattr(cfg, "pre_router_max_task_ids", 32)))
+        task_ids = torch.full((seq.size(0),), int(task_id), dtype=torch.long, device=seq.device)
+    _set_expert_task_context(runtime, task_ids)
+    context_was_set = _set_router_context_if_needed(runtime, expert_input, task_ids=task_ids)
     try:
         for _ in range(max_new_tokens):
             out = model(
@@ -681,6 +770,7 @@ def _generate_rationale(
                     expert_input=expert_input,
                     task_name=task_name,
                     allowed_token_ids=allowed_token_ids,
+                    task_ids=task_ids,
                 )
             nxt = _sample_next_token(
                 step_logits,
@@ -698,6 +788,7 @@ def _generate_rationale(
     finally:
         if context_was_set and hasattr(runtime.fusion_policy, "clear_context"):
             runtime.fusion_policy.clear_context()
+        _set_expert_task_context(runtime, None)
     # Decode generated continuation only; decoding the full sequence includes the
     # prompt template (which itself contains "Answer:/Rationale:" placeholders).
     try:
@@ -708,10 +799,24 @@ def _generate_rationale(
 
 
 def _extract_answer_rationale(text: str):
-    ans_matches = re.findall(r"(?im)\banswer\s*:\s*([^\n\.]+)", str(text))
-    rat_matches = re.findall(r"(?ims)\brationale\s*:\s*(.+?)(?=\banswer\s*:|$)", str(text))
-    answer_text = ans_matches[-1].strip() if ans_matches else ""
-    rationale_text = rat_matches[-1].strip() if rat_matches else ""
+    raw = str(text)
+    answer_text = ""
+    rationale_text = ""
+    json_match = re.search(r"\{[\s\S]*\}", raw)
+    if json_match:
+        try:
+            payload = json.loads(json_match.group(0))
+            if isinstance(payload, dict):
+                answer_text = str(payload.get("answer", "")).strip()
+                rationale_text = str(payload.get("rationale", "")).strip()
+        except Exception:
+            pass
+    if not answer_text:
+        ans_matches = re.findall(r"(?im)\banswer\s*:\s*([^\n\.]+)", raw)
+        answer_text = ans_matches[-1].strip() if ans_matches else ""
+    if not rationale_text:
+        rat_matches = re.findall(r"(?ims)\brationale\s*:\s*(.+?)(?=\banswer\s*:|$)", raw)
+        rationale_text = rat_matches[-1].strip() if rat_matches else ""
     return answer_text, rationale_text
 
 
@@ -777,9 +882,13 @@ def _eval_task(
     answer_code_valid = 0
     answer_code_correct = 0
     rationale_hallucinated = 0
+    gate_values: List[float] = []
+    gate_correct: List[int] = []
+    eval_wall_seconds = 0.0
 
     with torch.no_grad():
         for batch in eval_loader:
+            t0 = time.perf_counter()
             tokens = batch["prompt_tokens"].to(device)
             mask = batch["prompt_mask"].to(device)
             logits = _forward_logits_for_batch(model, runtime, batch, cfg, device, baseline_mode)
@@ -791,6 +900,12 @@ def _eval_task(
             targets = batch["target_token_id"].cpu()
             correct += (pred_ids == targets).sum().item()
             total += targets.numel()
+            semantic_expert = getattr(runtime, "semantic_expert", None) if runtime is not None else None
+            if semantic_expert is not None and getattr(semantic_expert, "pre_router_gate", None) is not None:
+                vals = semantic_expert.pre_router_gate.detach().float().view(-1).cpu().tolist()
+                if vals:
+                    gate_values.extend(vals)
+                    gate_correct.extend((pred_ids == targets).int().tolist())
 
             if task.name in {"vqa", "finegrained", "grounded_generation", "strict_yesno"}:
                 if "answer_idx" in batch:
@@ -866,9 +981,11 @@ def _eval_task(
                         and len(rationale_text) >= int(task.min_rationale_chars)
                     ):
                         rationale_faithful += 1
+            eval_wall_seconds += max(0.0, time.perf_counter() - t0)
 
     acc = correct / max(1, total)
     result: Dict[str, float] = {"accuracy": float(acc)}
+    result["latency_ms_per_sample"] = float(1000.0 * eval_wall_seconds / max(1, total))
 
     if task.name in {"vqa", "finegrained", "grounded_generation", "strict_yesno"} and y_true:
         n_cls = max(1, len(set(y_true)))
@@ -888,6 +1005,22 @@ def _eval_task(
         result["answer_code_accuracy"] = float(answer_code_correct / max(1, len(rationale_scores)))
         result["rationale_hallucination_rate"] = float(rationale_hallucinated / max(1, len(rationale_scores)))
         result["rationale_faithful_rate"] = float(rationale_faithful / max(1, len(rationale_scores)))
+    if gate_values:
+        g = torch.tensor(gate_values, dtype=torch.float32)
+        result["pre_router_gate_mean"] = float(g.mean().item())
+        result["pre_router_gate_std"] = float(g.std(unbiased=False).item())
+    else:
+        result["pre_router_gate_mean"] = 1.0
+        result["pre_router_gate_std"] = 0.0
+    if gate_values and gate_correct and len(gate_values) == len(gate_correct):
+        g = torch.tensor(gate_values, dtype=torch.float32)
+        c = torch.tensor(gate_correct, dtype=torch.float32)
+        if float(g.std(unbiased=False).item()) > 0.0 and float(c.std(unbiased=False).item()) > 0.0:
+            result["pre_router_gate_accuracy_corr"] = float(torch.corrcoef(torch.stack([g, c]))[0, 1].item())
+        else:
+            result["pre_router_gate_accuracy_corr"] = 0.0
+    else:
+        result["pre_router_gate_accuracy_corr"] = 0.0
     return result
 
 
@@ -896,6 +1029,8 @@ def _metric_fields_for_aggregate(rows: List[Dict]) -> List[str]:
     for row in rows:
         for k, v in row.items():
             if k in {"seed", "status", "error", "traceback"}:
+                continue
+            if isinstance(v, bool):
                 continue
             if isinstance(v, (int, float)):
                 out.append(k)
@@ -938,7 +1073,7 @@ def _append_seed_aggregate_rows(rows: List[Dict]) -> List[Dict]:
 
 
 def _save_rows(rows: List[Dict], out_csv: str, out_json: str):
-    os.makedirs(os.path.dirname(out_csv), exist_ok=True)
+    os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
     keys = []
     for r in rows:
         for k in r.keys():
@@ -952,6 +1087,60 @@ def _save_rows(rows: List[Dict], out_csv: str, out_json: str):
         json.dump(rows, f, indent=2)
 
 
+def _as_float(v) -> Optional[float]:
+    if isinstance(v, bool):
+        return None
+    if isinstance(v, (int, float)):
+        return float(v)
+    return None
+
+
+def _row_value_or_mean(row: Dict, key: str, default: float) -> float:
+    for k in (f"{key}_mean", key):
+        v = _as_float(row.get(k))
+        if v is not None:
+            return v
+    return float(default)
+
+
+def _quality_score_from_row(row: Dict) -> float:
+    task_name = str(row.get("task", "")).strip().lower()
+    if task_name == "population":
+        mae = _row_value_or_mean(row, "mae", default=1.0)
+        return float(max(0.0, min(1.0, 1.0 - mae)))
+    acc = _row_value_or_mean(row, "accuracy", default=_row_value_or_mean(row, "metric", default=0.0))
+    return float(max(0.0, min(1.0, acc)))
+
+
+def _instability_from_row(row: Dict) -> float:
+    metric_name = str(row.get("metric_name") or _metric_name_for_task(str(row.get("task", ""))))
+    for k in ("metric_std", f"{metric_name}_std"):
+        v = _as_float(row.get(k))
+        if v is not None:
+            return float(max(0.0, v))
+    return 0.0
+
+
+def _annotate_joint_scores(rows: List[Dict], cfg: TaskMatrixConfig) -> List[Dict]:
+    latency_w = float(getattr(cfg, "joint_score_latency_weight", 0.03))
+    format_w = float(getattr(cfg, "joint_score_format_weight", 0.25))
+    instability_w = float(getattr(cfg, "joint_score_instability_weight", 0.5))
+    for row in rows:
+        quality = _quality_score_from_row(row)
+        fmt = _row_value_or_mean(row, "format_compliance", default=1.0)
+        format_fail = float(max(0.0, min(1.0, 1.0 - fmt)))
+        latency_ms = _row_value_or_mean(row, "latency_ms_per_sample", default=0.0)
+        latency_s = float(max(0.0, latency_ms) / 1000.0)
+        instability = _instability_from_row(row)
+        joint = quality - (latency_w * latency_s) - (format_w * format_fail) - (instability_w * instability)
+        row["quality_score"] = float(quality)
+        row["format_fail_rate"] = float(format_fail)
+        row["latency_s_per_sample"] = float(latency_s)
+        row["instability_penalty"] = float(instability)
+        row["joint_score"] = float(joint)
+    return rows
+
+
 def run_task_matrix(cfg: TaskMatrixConfig) -> List[Dict]:
     set_seed(cfg.seed)
     device = _device(cfg.device)
@@ -963,42 +1152,45 @@ def run_task_matrix(cfg: TaskMatrixConfig) -> List[Dict]:
         set_seed(run_seed)
         for i, task in enumerate(cfg.tasks):
             for baseline_mode in baseline_modes:
+                cfg_run = _resolve_cfg_for_task(cfg, task, baseline_mode)
                 try:
-                    model, tokenizer = _build_model_tokenizer(cfg)
-                    runtime = _attach_connector(cfg, model, baseline_mode)
+                    model, tokenizer = _build_model_tokenizer(cfg_run)
+                    runtime = _attach_connector(cfg_run, model, baseline_mode)
                     model = model.to(device).to(torch.bfloat16 if device.type == "cuda" else torch.float32)
                     if runtime is not None:
                         runtime_dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
                         runtime.semantic_expert = runtime.semantic_expert.to(device=device, dtype=runtime_dtype)
                         runtime.fusion_policy = runtime.fusion_policy.to(device=device, dtype=runtime_dtype)
-                    train_loader, eval_loader = _build_task_loaders(task, tokenizer, cfg.data_root, run_seed + i)
-                    _train_connector(model, runtime, train_loader, task, cfg, device, baseline_mode)
-                    metrics = _eval_task(model, runtime, tokenizer, eval_loader, task, cfg, device, baseline_mode)
+                    train_loader, eval_loader = _build_task_loaders(task, tokenizer, cfg_run.data_root, run_seed + i)
+                    _train_connector(model, runtime, train_loader, task, cfg_run, device, baseline_mode)
+                    metrics = _eval_task(model, runtime, tokenizer, eval_loader, task, cfg_run, device, baseline_mode)
 
-                    if cfg.save_bundle_dir and runtime is not None:
-                        bundle_dir = os.path.join(cfg.save_bundle_dir, f"{task.name}_{baseline_mode}")
+                    if cfg_run.save_bundle_dir and runtime is not None:
+                        bundle_dir = os.path.join(cfg_run.save_bundle_dir, f"{task.name}_{baseline_mode}")
                         enc_spec = {
-                            "expert_type": cfg.expert_type,
-                            "model_id": cfg.expert_model_id,
-                            "model_path": cfg.expert_model_path,
-                            "output_dim": cfg.expert_output_dim,
-                            "cache_dir": cfg.server_models_path,
-                            "use_runtime_detector": cfg.use_runtime_detector,
+                            "expert_type": cfg_run.expert_type,
+                            "model_id": cfg_run.expert_model_id,
+                            "model_path": cfg_run.expert_model_path,
+                            "output_dim": cfg_run.expert_output_dim,
+                            "cache_dir": cfg_run.server_models_path,
+                            "use_runtime_detector": cfg_run.use_runtime_detector,
                         }
                         save_expert_bundle(
                             bundle_dir,
                             encoder_spec=enc_spec,
                             semantic_expert=runtime.semantic_expert,
                             fusion_policy=runtime.fusion_policy,
-                            normalization_stats=cfg.normalization_stats,
-                            label_schema=cfg.label_schema,
-                            upload_scope=str(getattr(cfg, "upload_scope", "expert_only")),
+                            normalization_stats=cfg_run.normalization_stats,
+                            label_schema=cfg_run.label_schema,
+                            upload_scope=str(getattr(cfg_run, "upload_scope", "expert_only")),
                             metadata={
                                 "task": task.name,
-                                "model_name": cfg.model_name,
-                                "fusion_policy": _fusion_policy_for_mode(cfg, baseline_mode),
-                                "layer_idx": cfg.layer_idx,
-                                "feature_format": "tabular" if cfg.expert_type in {"xgboost", "ft_transformer", "tabpfn", "tabular"} else "image_tensor",
+                                "model_name": cfg_run.model_name,
+                                "fusion_policy": _fusion_policy_for_mode(cfg_run, baseline_mode),
+                                "layer_idx": cfg_run.layer_idx,
+                                "feature_format": "tabular"
+                                if cfg_run.expert_type in {"xgboost", "ft_transformer", "tabpfn", "tabular"}
+                                else "image_tensor",
                             },
                         )
 
@@ -1006,12 +1198,15 @@ def run_task_matrix(cfg: TaskMatrixConfig) -> List[Dict]:
                         "task": task.name,
                         "dataset": _result_dataset_name(task),
                         "baseline_mode": baseline_mode,
-                        "expert_type": cfg.expert_type,
-                        "backbone": cfg.model_name,
-                        "fusion_policy": _fusion_policy_for_mode(cfg, baseline_mode),
-                        "k": cfg.num_tokens if runtime is not None else 0,
-                        "layer_idx": cfg.layer_idx,
-                        "evidence_dim": cfg.evidence_dim if runtime is not None else 0,
+                        "expert_type": cfg_run.expert_type,
+                        "backbone": cfg_run.model_name,
+                        "fusion_policy": _fusion_policy_for_mode(cfg_run, baseline_mode),
+                        "k": cfg_run.num_tokens if runtime is not None else 0,
+                        "layer_idx": cfg_run.layer_idx,
+                        "evidence_dim": cfg_run.evidence_dim if runtime is not None else 0,
+                        "use_pre_router": bool(getattr(cfg_run, "use_pre_router", False)),
+                        "pre_router_mode": str(getattr(cfg_run, "pre_router_mode", "global_feature")),
+                        "task_conditioning": bool(getattr(cfg_run, "task_conditioning", False)),
                         "metric_name": _metric_name_for_task(task.name),
                         "metric": metrics.get("mae", metrics.get("accuracy", 0.0)),
                         "seed": int(run_seed),
@@ -1026,12 +1221,18 @@ def run_task_matrix(cfg: TaskMatrixConfig) -> List[Dict]:
                         "task": task.name,
                         "dataset": _result_dataset_name(task),
                         "baseline_mode": baseline_mode,
-                        "expert_type": cfg.expert_type,
-                        "backbone": cfg.model_name,
-                        "fusion_policy": _fusion_policy_for_mode(cfg, baseline_mode),
-                        "k": cfg.num_tokens if baseline_mode in {"overwrite", "router_parallel"} else 0,
-                        "layer_idx": cfg.layer_idx,
-                        "evidence_dim": cfg.evidence_dim if baseline_mode in {"overwrite", "router_parallel"} else 0,
+                        "expert_type": cfg_run.expert_type,
+                        "backbone": cfg_run.model_name,
+                        "fusion_policy": _fusion_policy_for_mode(cfg_run, baseline_mode),
+                        "k": cfg_run.num_tokens if baseline_mode in {"overwrite", "router_parallel"} else 0,
+                        "layer_idx": cfg_run.layer_idx,
+                        "evidence_dim": cfg_run.evidence_dim if baseline_mode in {"overwrite", "router_parallel"} else 0,
+                        "use_pre_router": bool(getattr(cfg_run, "use_pre_router", False)),
+                        "pre_router_mode": str(getattr(cfg_run, "pre_router_mode", "global_feature")),
+                        "task_conditioning": bool(getattr(cfg_run, "task_conditioning", False)),
+                        "pre_router_gate_mean": 1.0,
+                        "pre_router_gate_std": 0.0,
+                        "pre_router_gate_accuracy_corr": 0.0,
                         "metric_name": _metric_name_for_task(task.name),
                         "metric": 0.0,
                         "seed": int(run_seed),
@@ -1045,6 +1246,7 @@ def run_task_matrix(cfg: TaskMatrixConfig) -> List[Dict]:
 
     if cfg.aggregate_seed_metrics:
         rows = _append_seed_aggregate_rows(rows)
+    rows = _annotate_joint_scores(rows, cfg)
 
     _save_rows(rows, cfg.out_csv, cfg.out_json)
     return rows

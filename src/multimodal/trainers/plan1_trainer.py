@@ -24,7 +24,12 @@ from src.multimodal.evidence import (
     VisionEvidenceBuilder,
 )
 from src.multimodal.experts import build_vision_expert
-from src.multimodal.injection import EvidenceProjector, SemanticEvidenceDomainExpert
+from src.multimodal.injection import (
+    EvidencePreRouter,
+    EvidenceProjector,
+    SemanticEvidenceDomainExpert,
+    task_name_to_id,
+)
 from src.multimodal.tasks.prompts import class_names_for_dataset
 from src.multimodal.utils.backbone import resolve_backbone
 from src.multimodal.utils.logging_utils import MetricLogger
@@ -71,6 +76,12 @@ class TrainPlan1Args:
     tune_layernorm: bool = False
     inject_location: str = "layer_input"
     fusion_policy: str = "post_attn_router_parallel"
+    use_pre_router: bool = False
+    pre_router_mode: str = "global_feature"  # global|feature|global_feature
+    pre_router_hidden_dim: int = 128
+    task_conditioning: bool = False
+    pre_router_task_embedding_dim: int = 16
+    pre_router_max_task_ids: int = 32
     load_in_4bit: bool = False
     bnb_4bit_compute_dtype: str = "bfloat16"
     bnb_4bit_quant_type: str = "nf4"
@@ -187,7 +198,21 @@ def _attach_semantic_expert(args: TrainPlan1Args, model, tokenizer):
         num_tokens=args.num_tokens,
         alpha=args.alpha,
     )
-    semantic_expert = SemanticEvidenceDomainExpert(evidence_builder=evidence_builder, projector=projector)
+    pre_router = None
+    if bool(getattr(args, "use_pre_router", False)):
+        pre_router = EvidencePreRouter(
+            evidence_dim=args.evidence_dim,
+            mode=str(getattr(args, "pre_router_mode", "global_feature")),
+            hidden_dim=int(getattr(args, "pre_router_hidden_dim", 128)),
+            task_conditioning=bool(getattr(args, "task_conditioning", False)),
+            task_embedding_dim=int(getattr(args, "pre_router_task_embedding_dim", 16)),
+            max_task_ids=int(getattr(args, "pre_router_max_task_ids", 32)),
+        )
+    semantic_expert = SemanticEvidenceDomainExpert(
+        evidence_builder=evidence_builder,
+        projector=projector,
+        pre_router=pre_router,
+    )
     if hasattr(model, "add_expert_"):
         model.add_expert_(semantic_expert, layer_id=args.layer_to_add, map_to_expert_emb=None)
     else:
@@ -311,6 +336,64 @@ def _build_expert_inputs(args: TrainPlan1Args, batch: Dict, device, text_tokeniz
     raise ValueError(args.evidence_source)
 
 
+def _task_key_from_batch_args(args: TrainPlan1Args) -> str:
+    if args.task_family == "population":
+        return "population"
+    if args.qa_type == "label_code":
+        return "single_label_code"
+    if args.qa_type == "yesno_set2":
+        return "single_yesno_set2"
+    if args.qa_type == "yesno":
+        return "single_yesno"
+    return "single_label"
+
+
+def _task_ids_for_batch(args: TrainPlan1Args, batch: Dict, device: torch.device) -> Optional[torch.Tensor]:
+    if not bool(getattr(args, "task_conditioning", False)):
+        return None
+    bsz = int(batch["prompt_tokens"].size(0))
+    task_id = task_name_to_id(_task_key_from_batch_args(args), max_task_ids=int(getattr(args, "pre_router_max_task_ids", 32)))
+    return torch.full((bsz,), int(task_id), dtype=torch.long, device=device)
+
+
+def _set_expert_task_context(
+    semantic_expert: Optional[SemanticEvidenceDomainExpert],
+    *,
+    task_id: Optional[torch.Tensor],
+) -> None:
+    if semantic_expert is None:
+        return
+    if getattr(semantic_expert, "pre_router", None) is None:
+        return
+    if task_id is None:
+        semantic_expert.clear_task_context()
+        return
+    semantic_expert.set_task_context(task_id=task_id)
+
+
+def _collect_trainable_named_parameters(model: nn.Module, semantic_expert: SemanticEvidenceDomainExpert):
+    seen = set()
+    rows = []
+    for prefix, module in (("model", model), ("semantic_expert", semantic_expert)):
+        for name, param in module.named_parameters():
+            if not param.requires_grad:
+                continue
+            pid = id(param)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            rows.append((f"{prefix}.{name}", int(param.numel())))
+    return rows
+
+
+def _print_trainable_parameter_report(model: nn.Module, semantic_expert: SemanticEvidenceDomainExpert):
+    rows = _collect_trainable_named_parameters(model, semantic_expert)
+    total = int(sum(n for _, n in rows))
+    print(f"[plan1] trainable_parameter_count={total}")
+    for name, n in rows:
+        print(f"[plan1] trainable {name} params={n}")
+
+
 def _single_token_ids(tokenizer, text: str):
     ids = set()
     variants = [text, text.lower(), text.upper()]
@@ -368,17 +451,31 @@ def _evaluate(model, args, eval_loader, device, text_tokenizer, semantic_expert,
     model.eval()
     correct = 0
     total = 0
+    gate_vals = []
     for batch in eval_loader:
         tokens = batch["prompt_tokens"].to(device)
         mask = batch["prompt_mask"].to(device)
         targets = batch["target_token_id"].to(device)
         expert_inputs = _build_expert_inputs(args, batch, device, text_tokenizer, semantic_expert, vision_expert)
+        task_ids = _task_ids_for_batch(args, batch, device)
+        _set_expert_task_context(semantic_expert, task_id=task_ids)
         outputs = model(tokens, attention_mask=mask, expert_inputs=expert_inputs, use_cache=False)
         logits = outputs.logits[:, -1, :]
         pred = logits.argmax(dim=-1)
         correct += (pred == targets).sum().item()
         total += targets.numel()
-    return correct / max(1, total)
+        if getattr(semantic_expert, "pre_router_gate", None) is not None:
+            gate_vals.extend(semantic_expert.pre_router_gate.detach().float().view(-1).cpu().tolist())
+        semantic_expert.clear_task_context()
+    out = {"accuracy": correct / max(1, total)}
+    if gate_vals:
+        g = torch.tensor(gate_vals, dtype=torch.float32)
+        out["pre_router_gate_mean"] = float(g.mean().item())
+        out["pre_router_gate_std"] = float(g.std(unbiased=False).item())
+    else:
+        out["pre_router_gate_mean"] = 1.0
+        out["pre_router_gate_std"] = 0.0
+    return out
 
 
 def train_plan1(args: TrainPlan1Args):
@@ -404,6 +501,7 @@ def train_plan1(args: TrainPlan1Args):
 
     trainable = [p for p in model.parameters() if p.requires_grad]
     optimizer = torch.optim.AdamW(trainable, lr=args.learning_rate)
+    _print_trainable_parameter_report(model, semantic_expert)
     loss_fn = nn.CrossEntropyLoss()
     allowed_ids = _allowed_answer_token_ids(args, tokenizer, train_loader.dataset)
     allowed_ids_device = (
@@ -420,6 +518,8 @@ def train_plan1(args: TrainPlan1Args):
             targets = batch["target_token_id"].to(device)
 
             expert_inputs = _build_expert_inputs(args, batch, device, text_tokenizer, semantic_expert, vision_expert)
+            task_ids = _task_ids_for_batch(args, batch, device)
+            _set_expert_task_context(semantic_expert, task_id=task_ids)
             outputs = model(tokens, attention_mask=mask, expert_inputs=expert_inputs, use_cache=False)
             logits = outputs.logits[:, -1, :]
             loss = _subset_ce_loss(logits, targets, allowed_ids_device, loss_fn)
@@ -436,19 +536,24 @@ def train_plan1(args: TrainPlan1Args):
                 "step": global_step,
                 "loss": float(loss.item()),
                 "acc": float(batch_acc),
+                "pre_router_gate_mean": float(semantic_expert.pre_router_gate_stats()["mean"]),
+                "pre_router_gate_std": float(semantic_expert.pre_router_gate_stats()["std"]),
             }
             logger.log(row)
             global_step += 1
+            semantic_expert.clear_task_context()
 
             if global_step % args.eval_every_steps == 0:
-                eval_acc = _evaluate(model, args, eval_loader, device, text_tokenizer, semantic_expert, vision_expert)
-                logger.log({"split": "eval", "epoch": epoch, "step": global_step, "acc": float(eval_acc)})
+                eval_metrics = _evaluate(model, args, eval_loader, device, text_tokenizer, semantic_expert, vision_expert)
+                eval_acc = float(eval_metrics.get("accuracy", 0.0))
+                logger.log({"split": "eval", "epoch": epoch, "step": global_step, "acc": eval_acc, **eval_metrics})
                 if eval_acc >= best_eval:
                     best_eval = eval_acc
                     torch.save(
                         {
                             "evidence_builder": semantic_expert.evidence_builder.state_dict(),
                             "projector": semantic_expert.projector.state_dict(),
+                            "pre_router": semantic_expert.pre_router.state_dict() if semantic_expert.pre_router is not None else None,
                             "adapters": model.adapter_state_dict(),
                             "layernorm": {
                                 str(i): {
@@ -463,12 +568,14 @@ def train_plan1(args: TrainPlan1Args):
                         os.path.join(args.run_dir, "best_connectors.pt"),
                     )
 
-    final_eval = _evaluate(model, args, eval_loader, device, text_tokenizer, semantic_expert, vision_expert)
-    logger.log({"split": "eval", "epoch": args.num_epochs, "step": global_step, "acc": float(final_eval)})
+    final_eval_metrics = _evaluate(model, args, eval_loader, device, text_tokenizer, semantic_expert, vision_expert)
+    final_eval = float(final_eval_metrics.get("accuracy", 0.0))
+    logger.log({"split": "eval", "epoch": args.num_epochs, "step": global_step, "acc": final_eval, **final_eval_metrics})
     torch.save(
         {
             "evidence_builder": semantic_expert.evidence_builder.state_dict(),
             "projector": semantic_expert.projector.state_dict(),
+            "pre_router": semantic_expert.pre_router.state_dict() if semantic_expert.pre_router is not None else None,
             "adapters": model.adapter_state_dict(),
             "layernorm": {
                 str(i): {
@@ -482,4 +589,12 @@ def train_plan1(args: TrainPlan1Args):
         },
         os.path.join(args.run_dir, "last_connectors.pt"),
     )
-    return {"final_eval_acc": final_eval, "best_eval_acc": best_eval}
+    return {
+        "final_eval_acc": final_eval,
+        "best_eval_acc": best_eval,
+        "pre_router_gate_mean": float(final_eval_metrics.get("pre_router_gate_mean", 1.0)),
+        "pre_router_gate_std": float(final_eval_metrics.get("pre_router_gate_std", 0.0)),
+        "use_pre_router": bool(getattr(args, "use_pre_router", False)),
+        "pre_router_mode": str(getattr(args, "pre_router_mode", "global_feature")),
+        "task_conditioning": bool(getattr(args, "task_conditioning", False)),
+    }

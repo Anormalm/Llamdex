@@ -24,6 +24,9 @@ def parse_args():
     p.add_argument("--use_adapters", type=int, default=0, choices=[0, 1])
     p.add_argument("--adapter_bottlenecks", type=int, nargs="+", default=[32, 64, 128])
     p.add_argument("--tune_layernorm_grid", type=int, nargs="+", default=[0])
+    p.add_argument("--use_pre_router_grid", type=int, nargs="+", default=[0, 1])
+    p.add_argument("--pre_router_modes", type=str, nargs="+", default=["global", "feature", "global_feature"])
+    p.add_argument("--task_conditioning_grid", type=int, nargs="+", default=[0, 1])
     return p.parse_args()
 
 
@@ -52,100 +55,125 @@ def main():
             for loc in args.inject_locations:
                 for bneck in adapter_grid:
                     for tune_ln in args.tune_layernorm_grid:
-                        run_dir = os.path.join(
-                            args.base_run_dir,
-                            f"tokens{t}_layer{k}_{loc}_adapt{args.use_adapters}_b{bneck}_ln{tune_ln}",
-                        )
-                        train_cmd = [
-                            sys.executable,
-                            "scripts/train_plan1.py",
-                            "--server_models_path",
-                            args.server_models_path,
-                            "--model_name",
-                            args.model_name,
-                            "--run_dir",
-                            run_dir,
-                            "--task_family",
-                            "single_image",
-                            "--evidence_source",
-                            "vision",
-                            "--qa_type",
-                            "label",
-                            "--num_tokens",
-                            str(t),
-                            "--layer",
-                            str(k),
-                            "--max_train_samples",
-                            str(args.train_samples),
-                            "--max_eval_samples",
-                            str(args.eval_samples),
-                            "--device",
-                            args.device,
-                            "--inject_location",
-                            loc,
-                            "--use_adapters",
-                            str(args.use_adapters),
-                            "--adapter_bottleneck",
-                            str(bneck),
-                            "--tune_layernorm",
-                            str(tune_ln),
-                        ]
-                        subprocess.run(train_cmd, check=True)
+                        for use_pre_router in args.use_pre_router_grid:
+                            modes = args.pre_router_modes if int(use_pre_router) == 1 else ["global_feature"]
+                            for pre_router_mode in modes:
+                                for task_conditioning in args.task_conditioning_grid:
+                                    run_dir = os.path.join(
+                                        args.base_run_dir,
+                                        f"tokens{t}_layer{k}_{loc}_adapt{args.use_adapters}_b{bneck}_ln{tune_ln}_pr{use_pre_router}_{pre_router_mode}_tc{task_conditioning}",
+                                    )
+                                    train_cmd = [
+                                        sys.executable,
+                                        "scripts/train_plan1.py",
+                                        "--server_models_path",
+                                        args.server_models_path,
+                                        "--model_name",
+                                        args.model_name,
+                                        "--run_dir",
+                                        run_dir,
+                                        "--task_family",
+                                        "single_image",
+                                        "--evidence_source",
+                                        "vision",
+                                        "--qa_type",
+                                        "label",
+                                        "--num_tokens",
+                                        str(t),
+                                        "--layer",
+                                        str(k),
+                                        "--max_train_samples",
+                                        str(args.train_samples),
+                                        "--max_eval_samples",
+                                        str(args.eval_samples),
+                                        "--device",
+                                        args.device,
+                                        "--inject_location",
+                                        loc,
+                                        "--use_adapters",
+                                        str(args.use_adapters),
+                                        "--adapter_bottleneck",
+                                        str(bneck),
+                                        "--tune_layernorm",
+                                        str(tune_ln),
+                                        "--use_pre_router",
+                                        str(int(use_pre_router)),
+                                        "--pre_router_mode",
+                                        pre_router_mode,
+                                        "--task_conditioning",
+                                        str(int(task_conditioning)),
+                                    ]
+                                    subprocess.run(train_cmd, check=True)
 
-                        eval_cmd = [
-                            sys.executable,
-                            "scripts/eval_plan1.py",
-                            "--server_models_path",
-                            args.server_models_path,
-                            "--model_name",
-                            args.model_name,
-                            "--task_family",
-                            "single_image",
-                            "--evidence_source",
-                            "vision",
-                            "--qa_type",
-                            "label",
-                            "--num_tokens",
-                            str(t),
-                            "--layer",
-                            str(k),
-                            "--max_eval_samples",
-                            str(args.eval_samples),
-                            "--baseline",
-                            "injection",
-                            "--device",
-                            args.device,
-                            "--inject_location",
-                            loc,
-                            "--use_adapters",
-                            str(args.use_adapters),
-                            "--adapter_bottleneck",
-                            str(bneck),
-                            "--tune_layernorm",
-                            str(tune_ln),
-                        ]
-                        best_ckpt = os.path.join(run_dir, "best_connectors.pt")
-                        last_ckpt = os.path.join(run_dir, "last_connectors.pt")
-                        connectors_path = best_ckpt if os.path.exists(best_ckpt) else last_ckpt
-                        eval_cmd.extend(["--connectors_path", connectors_path])
-                        proc = subprocess.run(eval_cmd, check=True, capture_output=True, text=True)
-                        out = (proc.stdout or "").strip()
-                        m = re.search(r"accuracy['\"]?\s*:\s*([0-9]*\.?[0-9]+)", out)
-                        acc = float(m.group(1)) if m else -1.0
-                        rows.append(
-                            {
-                                "num_tokens": t,
-                                "layer": k,
-                                "inject_location": loc,
-                                "use_adapters": args.use_adapters,
-                                "adapter_bottleneck": bneck,
-                                "tune_layernorm": tune_ln,
-                                "accuracy": acc,
-                                "raw_eval_output": out,
-                            }
-                        )
-                        if best_row is None or acc > best_row["accuracy"]:
-                            best_row = dict(rows[-1])
+                                    eval_cmd = [
+                                        sys.executable,
+                                        "scripts/eval_plan1.py",
+                                        "--server_models_path",
+                                        args.server_models_path,
+                                        "--model_name",
+                                        args.model_name,
+                                        "--task_family",
+                                        "single_image",
+                                        "--evidence_source",
+                                        "vision",
+                                        "--qa_type",
+                                        "label",
+                                        "--num_tokens",
+                                        str(t),
+                                        "--layer",
+                                        str(k),
+                                        "--max_eval_samples",
+                                        str(args.eval_samples),
+                                        "--baseline",
+                                        "injection",
+                                        "--device",
+                                        args.device,
+                                        "--inject_location",
+                                        loc,
+                                        "--use_adapters",
+                                        str(args.use_adapters),
+                                        "--adapter_bottleneck",
+                                        str(bneck),
+                                        "--tune_layernorm",
+                                        str(tune_ln),
+                                        "--use_pre_router",
+                                        str(int(use_pre_router)),
+                                        "--pre_router_mode",
+                                        pre_router_mode,
+                                        "--task_conditioning",
+                                        str(int(task_conditioning)),
+                                    ]
+                                    best_ckpt = os.path.join(run_dir, "best_connectors.pt")
+                                    last_ckpt = os.path.join(run_dir, "last_connectors.pt")
+                                    connectors_path = best_ckpt if os.path.exists(best_ckpt) else last_ckpt
+                                    eval_cmd.extend(["--connectors_path", connectors_path])
+                                    proc = subprocess.run(eval_cmd, check=True, capture_output=True, text=True)
+                                    out = (proc.stdout or "").strip()
+                                    m = re.search(r"accuracy['\"]?\s*:\s*([0-9]*\.?[0-9]+)", out)
+                                    gm = re.search(r"pre_router_gate_mean['\"]?\s*:\s*([0-9]*\.?[0-9]+)", out)
+                                    gs = re.search(r"pre_router_gate_std['\"]?\s*:\s*([0-9]*\.?[0-9]+)", out)
+                                    acc = float(m.group(1)) if m else -1.0
+                                    gate_mean = float(gm.group(1)) if gm else 1.0
+                                    gate_std = float(gs.group(1)) if gs else 0.0
+                                    rows.append(
+                                        {
+                                            "num_tokens": t,
+                                            "layer": k,
+                                            "inject_location": loc,
+                                            "use_adapters": args.use_adapters,
+                                            "adapter_bottleneck": bneck,
+                                            "tune_layernorm": tune_ln,
+                                            "use_pre_router": int(use_pre_router),
+                                            "pre_router_mode": pre_router_mode,
+                                            "task_conditioning": int(task_conditioning),
+                                            "pre_router_gate_mean": gate_mean,
+                                            "pre_router_gate_std": gate_std,
+                                            "accuracy": acc,
+                                            "raw_eval_output": out,
+                                        }
+                                    )
+                                    if best_row is None or acc > best_row["accuracy"]:
+                                        best_row = dict(rows[-1])
 
     with open(args.output_csv, "w", encoding="utf-8", newline="") as f:
         writer = csv.DictWriter(
@@ -157,6 +185,11 @@ def main():
                 "use_adapters",
                 "adapter_bottleneck",
                 "tune_layernorm",
+                "use_pre_router",
+                "pre_router_mode",
+                "task_conditioning",
+                "pre_router_gate_mean",
+                "pre_router_gate_std",
                 "accuracy",
                 "raw_eval_output",
             ],

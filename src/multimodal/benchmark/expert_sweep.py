@@ -34,7 +34,7 @@ class ExpertSweepConfig:
 
 
 def _save_rows(rows: List[Dict], out_csv: str, out_json: str):
-    os.makedirs(os.path.dirname(out_csv), exist_ok=True)
+    os.makedirs(os.path.dirname(out_csv) or ".", exist_ok=True)
     keys: List[str] = []
     for row in rows:
         for key in row.keys():

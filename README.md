@@ -405,6 +405,24 @@ Implementation anchors:
 - `src/multimodal/evidence/*`
 - `src/multimodal/injection/*`
 
+### Hierarchical Routing Upgrade
+
+Plan-1++ now supports a hierarchical evidence path:
+
+`raw evidence z -> EvidencePreRouter (admission gate) -> gated evidence z' -> EvidenceProjector -> existing injection/router fusion`
+
+The two routing stages have different roles:
+- Pre-router: evidence admission/filtering before projection into LLM token space.
+- Injection/fusion router: interaction between projected evidence and LLM hidden states.
+
+Pre-router controls:
+- `--use_pre_router 0|1`
+- `--pre_router_mode global|feature|global_feature`
+- `--pre_router_hidden_dim <int>`
+- `--task_conditioning 0|1`
+
+When `--use_pre_router 0`, behavior is backward-compatible with prior Plan-1++ connector flow.
+
 ### New package
 
 `src/multimodal/`:
@@ -417,6 +435,24 @@ Implementation anchors:
 - `evidence/diffusion_builder.py`: Plan 2 placeholder (`NotImplementedError`)
 
 ### Train / Eval CLI
+
+Baseline (legacy-equivalent behavior):
+```bash
+python scripts/train_plan1.py \
+  --task_family single_image \
+  --evidence_source vision \
+  --use_pre_router 0
+```
+
+Hierarchical routing (recommended for noisy evidence):
+```bash
+python scripts/train_plan1.py \
+  --task_family single_image \
+  --evidence_source vision \
+  --use_pre_router 1 \
+  --pre_router_mode global_feature \
+  --task_conditioning 1
+```
 
 Description-first (recommended, privacy-first):
 ```bash
@@ -557,6 +593,8 @@ python scripts/run_plan1_ablation.py \
   --inject_locations post_attn pre_ffn post_ffn \
   --use_adapters 1 \
   --adapter_bottlenecks 32 64 128 \
+  --use_pre_router_grid 0 1 \
+  --pre_router_modes global feature global_feature \
   --output_csv runs/plan1_ablation_summary.csv
 ```
 

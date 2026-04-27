@@ -165,10 +165,58 @@ def _build_image_dataset(root: str, dataset_name: str, train: bool):
     raise ValueError(f"Unsupported image dataset for task matrix: {dataset_name}")
 
 
+def _dataset_prompt_tokens(dataset_name: str) -> Dict[str, str]:
+    name = str(dataset_name).strip().lower()
+    if name == "dtd":
+        return {
+            "schema": "DTD schema",
+            "class_var": "texture_class",
+            "evidence_phrase": "texture-grounded evidence sentence",
+            "finegrained": "Classify this texture image. Return `label_id` only from DTD schema. No explanation.",
+            "strict_yesno": "Question: Is this image `<texture_class>`? Return exactly one token: `Yes` or `No`.",
+            "population": "In this image bag, estimate fraction of `<texture_class>`. Return one integer in `[0..10]` only.",
+        }
+    if name == "oxford_pet":
+        return {
+            "schema": "Oxford-IIIT Pet schema",
+            "class_var": "breed_name",
+            "evidence_phrase": "breed-grounded evidence sentence",
+            "finegrained": "Classify this pet image by breed. Return `label_id` only from Oxford-IIIT Pet schema. No explanation.",
+            "strict_yesno": "Question: Is this image `<breed_name>`? Return exactly one token: `Yes` or `No`.",
+            "population": "In this image bag, estimate fraction of `<breed_name>`. Return one integer in `[0..10]` only.",
+        }
+    if name == "cifar10":
+        return {
+            "schema": "CIFAR-10 schema",
+            "class_var": "cifar_class",
+            "evidence_phrase": "object-grounded evidence sentence",
+            "finegrained": "Classify this image into CIFAR-10 classes. Return `label_id` only. No explanation.",
+            "strict_yesno": "Question: Is this image `<cifar_class>`? Return exactly one token: `Yes` or `No`.",
+            "population": "In this image bag, estimate fraction of `<cifar_class>`. Return one integer in `[0..10]` only.",
+        }
+    return {
+        "schema": "label schema",
+        "class_var": "class_name",
+        "evidence_phrase": "image-grounded evidence sentence",
+        "finegrained": "Classify this image. Return `label_id` only. No explanation.",
+        "strict_yesno": "Question: Is this image `<class_name>`? Return exactly one token: `Yes` or `No`.",
+        "population": "In this image bag, estimate fraction of `<class_name>`. Return one integer in `[0..10]` only.",
+    }
+
+
 class FineGrainedPetDataset(Dataset):
-    def __init__(self, root: str, tokenizer, train: bool, max_samples: Optional[int] = None, dataset_name: str = "oxford_pet"):
+    def __init__(
+        self,
+        root: str,
+        tokenizer,
+        train: bool,
+        max_samples: Optional[int] = None,
+        dataset_name: str = "oxford_pet",
+        prompt_template_style: str = "legacy",
+    ):
         self.tokenizer = tokenizer
         self.dataset_name = dataset_name
+        self.prompt_template_style = str(prompt_template_style).strip().lower()
         self.ds, self.class_names, self.task_label = _build_image_dataset(root=root, dataset_name=dataset_name, train=train)
         self.codes, self.code_to_tid = _build_codebook(tokenizer, len(self.class_names))
         self.indices = list(range(len(self.ds)))
@@ -182,8 +230,13 @@ class FineGrainedPetDataset(Dataset):
         i = self.indices[idx]
         image, label = self.ds[i]
         mapping = ", ".join([f"{self.codes[i]}={name}" for i, name in enumerate(self.class_names)])
-        prompt = f"Classify this {self.task_label}. Answer with one code only. Codes: {mapping}."
-        msgs = [{"role": "system", "content": "Answer with one code only."}, {"role": "user", "content": prompt}]
+        if self.prompt_template_style == "compact":
+            p = _dataset_prompt_tokens(self.dataset_name)
+            prompt = f"{p['finegrained']}\nLabel IDs: {mapping}"
+            msgs = [{"role": "system", "content": "Return only one label_id token from the label schema."}, {"role": "user", "content": prompt}]
+        else:
+            prompt = f"Classify this {self.task_label}. Answer with one code only. Codes: {mapping}."
+            msgs = [{"role": "system", "content": "Answer with one code only."}, {"role": "user", "content": prompt}]
         tok = _chat_template_tokens(self.tokenizer, msgs)
         mask = (tok != self.tokenizer.pad_token_id).long()
         code = self.codes[int(label)]
@@ -210,9 +263,11 @@ class PopulationBagDataset(Dataset):
         group_size: int = 8,
         max_groups: Optional[int] = 256,
         seed: int = 42,
+        prompt_template_style: str = "legacy",
     ):
         self.tokenizer = tokenizer
         self.dataset_name = dataset_name
+        self.prompt_template_style = str(prompt_template_style).strip().lower()
         self.group_size = group_size
         self.rng = random.Random(seed)
         self.ds, self.class_names, self.task_label = _build_image_dataset(root=root, dataset_name=dataset_name, train=train)
@@ -229,11 +284,16 @@ class PopulationBagDataset(Dataset):
         target = self.rng.randrange(len(self.class_names))
         frac = (labels == target).float().mean().item()
         bin_id = int(round(frac * 10.0))
-        prompt = (
-            f"In this bag of images, what fraction are class {self.class_names[target]}? "
-            "Answer with one integer 0 to 10."
-        )
-        msgs = [{"role": "system", "content": "Answer with one integer only."}, {"role": "user", "content": prompt}]
+        if self.prompt_template_style == "compact":
+            p = _dataset_prompt_tokens(self.dataset_name)
+            prompt = p["population"].replace(f"<{p['class_var']}>", self.class_names[target])
+            msgs = [{"role": "system", "content": "Return one integer only in [0..10]."}, {"role": "user", "content": prompt}]
+        else:
+            prompt = (
+                f"In this bag of images, what fraction are class {self.class_names[target]}? "
+                "Answer with one integer 0 to 10."
+            )
+            msgs = [{"role": "system", "content": "Answer with one integer only."}, {"role": "user", "content": prompt}]
         tok = _chat_template_tokens(self.tokenizer, msgs)
         mask = (tok != self.tokenizer.pad_token_id).long()
         return {
@@ -254,16 +314,30 @@ class GroundedGenerationDataset(FineGrainedPetDataset):
         row = super().__getitem__(idx)
         label_words = row["rationale_keywords"]
         mapping = ", ".join([f"{self.codes[i]}={name}" for i, name in enumerate(self.class_names)])
-        prompt = (
-            f"Identify the correct {self.task_label}. Answer with one code from the mapping. "
-            "Then write one short rationale sentence that includes words from the chosen class name.\n"
-            f"Codes: {mapping}\n"
-            "Format: Answer: <code>. Rationale: <short sentence with class words>."
-        )
-        msgs = [
-            {"role": "system", "content": "Follow format strictly. Include class words in the rationale."},
-            {"role": "user", "content": prompt},
-        ]
+        if self.prompt_template_style == "compact":
+            p = _dataset_prompt_tokens(self.dataset_name)
+            prompt = (
+                "Return JSON only: "
+                '{ "answer": "<label_id>", "rationale": "<'
+                + p["evidence_phrase"]
+                + '>" }\n'
+                f"Label IDs: {mapping}"
+            )
+            msgs = [
+                {"role": "system", "content": "Return valid JSON only with keys answer and rationale."},
+                {"role": "user", "content": prompt},
+            ]
+        else:
+            prompt = (
+                f"Identify the correct {self.task_label}. Answer with one code from the mapping. "
+                "Then write one short rationale sentence that includes words from the chosen class name.\n"
+                f"Codes: {mapping}\n"
+                "Format: Answer: <code>. Rationale: <short sentence with class words>."
+            )
+            msgs = [
+                {"role": "system", "content": "Follow format strictly. Include class words in the rationale."},
+                {"role": "user", "content": prompt},
+            ]
         tok = _chat_template_tokens(self.tokenizer, msgs)
         row["prompt_tokens"] = tok
         row["prompt_mask"] = (tok != self.tokenizer.pad_token_id).long()
@@ -273,8 +347,24 @@ class GroundedGenerationDataset(FineGrainedPetDataset):
 
 
 class StrictYesNoPetDataset(FineGrainedPetDataset):
-    def __init__(self, root: str, tokenizer, train: bool, max_samples: Optional[int] = None, seed: int = 42, dataset_name: str = "oxford_pet"):
-        super().__init__(root=root, tokenizer=tokenizer, train=train, max_samples=max_samples, dataset_name=dataset_name)
+    def __init__(
+        self,
+        root: str,
+        tokenizer,
+        train: bool,
+        max_samples: Optional[int] = None,
+        seed: int = 42,
+        dataset_name: str = "oxford_pet",
+        prompt_template_style: str = "legacy",
+    ):
+        super().__init__(
+            root=root,
+            tokenizer=tokenizer,
+            train=train,
+            max_samples=max_samples,
+            dataset_name=dataset_name,
+            prompt_template_style=prompt_template_style,
+        )
         self.rng = random.Random(seed)
         self.yes_id = _token_id_for_word(tokenizer, "Yes")
         self.no_id = _token_id_for_word(tokenizer, "No")
@@ -284,14 +374,22 @@ class StrictYesNoPetDataset(FineGrainedPetDataset):
         image, label = self.ds[i]
         target_cls = self.rng.randrange(len(self.class_names))
         answer_is_yes = int(label) == int(target_cls)
-        prompt = (
-            f"Question: Is this image a {self.class_names[target_cls]}? "
-            "Answer strictly with one token: Yes or No."
-        )
-        msgs = [
-            {"role": "system", "content": "Strict output format: one token only, Yes or No."},
-            {"role": "user", "content": prompt},
-        ]
+        if self.prompt_template_style == "compact":
+            p = _dataset_prompt_tokens(self.dataset_name)
+            prompt = p["strict_yesno"].replace(f"<{p['class_var']}>", self.class_names[target_cls])
+            msgs = [
+                {"role": "system", "content": "Return exactly one token: Yes or No."},
+                {"role": "user", "content": prompt},
+            ]
+        else:
+            prompt = (
+                f"Question: Is this image a {self.class_names[target_cls]}? "
+                "Answer strictly with one token: Yes or No."
+            )
+            msgs = [
+                {"role": "system", "content": "Strict output format: one token only, Yes or No."},
+                {"role": "user", "content": prompt},
+            ]
         tok = _chat_template_tokens(self.tokenizer, msgs)
         mask = (tok != self.tokenizer.pad_token_id).long()
         return {

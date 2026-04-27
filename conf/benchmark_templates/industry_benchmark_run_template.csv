@@ -1,0 +1,13 @@
+benchmark,split,task_type,modality,setting,shots,prompt_template,decoder_temp,decoder_top_p,max_new_tokens,seed,model_name,model_variant,fusion_policy,params_b,quantization,hardware,throughput_sps,latency_ms_per_sample,cost_usd_per_1k_samples,primary_metric,primary_score,secondary_metric,secondary_score,run_id,date_utc,notes
+MMMU,val,mcq,vision+text,zero-shot,0,mmmu_v1,0.0,1.0,32,42,YourModel,default_preffn,pre_ffn_router_parallel,9,bf16,A100-80GB,1.8,555,0.00,accuracy,0.000,format_compliance,1.000,run_001,2026-04-23,
+MMBench-EN,test,mcq,vision+text,zero-shot,0,mmb_en_v1,0.0,1.0,32,42,YourModel,default_preffn,pre_ffn_router_parallel,9,bf16,A100-80GB,2.1,476,0.00,accuracy,0.000,calibration,0.000,run_001,2026-04-23,
+MMVet,test,open_ended,vision+text,zero-shot,0,mmvet_v1,0.0,1.0,64,42,YourModel,default_preffn,pre_ffn_router_parallel,9,bf16,A100-80GB,1.2,833,0.00,mmvet_score,0.000,hallucination_rate,0.000,run_001,2026-04-23,
+ScienceQA,test,mcq,vision+text,zero-shot,0,scienceqa_v1,0.0,1.0,32,42,YourModel,default_preffn,pre_ffn_router_parallel,9,bf16,A100-80GB,2.4,417,0.00,accuracy,0.000,explainability_score,0.000,run_001,2026-04-23,
+TextVQA,test,open_ended,vision+text,zero-shot,0,textvqa_v1,0.0,1.0,32,42,YourModel,default_preffn,pre_ffn_router_parallel,9,bf16,A100-80GB,2.0,500,0.00,accuracy,0.000,anls,0.000,run_001,2026-04-23,
+DocVQA,test,open_ended,vision+text,zero-shot,0,docvqa_v1,0.0,1.0,48,42,YourModel,default_preffn,pre_ffn_router_parallel,9,bf16,A100-80GB,1.6,625,0.00,anls,0.000,accuracy,0.000,run_001,2026-04-23,
+ChartQA,test,open_ended,vision+text,zero-shot,0,chartqa_v1,0.0,1.0,48,42,YourModel,default_preffn,pre_ffn_router_parallel,9,bf16,A100-80GB,1.7,588,0.00,accuracy,0.000,numeric_f1,0.000,run_001,2026-04-23,
+POPE,test,yes_no,vision+text,zero-shot,0,pope_v1,0.0,1.0,16,42,YourModel,default_preffn,pre_ffn_router_parallel,9,bf16,A100-80GB,3.2,313,0.00,f1,0.000,hallucination_rate,0.000,run_001,2026-04-23,
+MMLU-Pro,test,mcq,text,zero-shot,0,mmlu_pro_v1,0.0,1.0,16,42,YourModel,default_preffn,none,9,bf16,A100-80GB,8.0,125,0.00,accuracy,0.000,calibration,0.000,run_001,2026-04-23,
+GPQA,test,mcq,text,zero-shot,0,gpqa_v1,0.0,1.0,32,42,YourModel,default_preffn,none,9,bf16,A100-80GB,4.5,222,0.00,accuracy,0.000,pass_at_1,0.000,run_001,2026-04-23,
+HumanEval,test,code,text,zero-shot,0,humaneval_v1,0.2,0.95,256,42,YourModel,default_preffn,none,9,bf16,A100-80GB,0.9,1111,0.00,pass@1,0.000,pass@10,0.000,run_001,2026-04-23,
+HarmBench,test,safety,text+vision,zero-shot,0,harmbench_v1,0.0,1.0,64,42,YourModel,default_preffn,none,9,bf16,A100-80GB,1.5,667,0.00,attack_success_rate,0.000,refusal_precision,0.000,run_001,2026-04-23,

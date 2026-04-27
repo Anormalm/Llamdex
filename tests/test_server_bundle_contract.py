@@ -13,6 +13,7 @@ from src.multimodal.server import (
     read_bundle_manifest,
     save_expert_bundle,
 )
+from src.multimodal.server import expert_bundle as expert_bundle_mod
 
 
 def _build_semantic_expert():
@@ -170,3 +171,36 @@ def test_service_response_contract_exposes_trace_bundle_and_audit():
     assert response.confidence == 0.87
     assert response.audit["fusion_policy"] == "pre_attn_overwrite"
     assert "Rationale:" in response.output_text
+
+
+def test_load_torch_weights_prefers_weights_only(monkeypatch):
+    seen = {}
+
+    def _fake_load(path, **kwargs):
+        seen["path"] = path
+        seen["kwargs"] = kwargs
+        return {"ok": True}
+
+    monkeypatch.setattr(expert_bundle_mod.torch, "load", _fake_load)
+    out = expert_bundle_mod._load_torch_weights("/tmp/bundle.pt", map_location="cpu")
+    assert out == {"ok": True}
+    assert seen["path"] == "/tmp/bundle.pt"
+    assert seen["kwargs"]["map_location"] == "cpu"
+    assert seen["kwargs"]["weights_only"] is True
+
+
+def test_load_torch_weights_falls_back_when_weights_only_unsupported(monkeypatch):
+    calls = []
+
+    def _fake_load(path, **kwargs):
+        calls.append(kwargs)
+        if "weights_only" in kwargs:
+            raise TypeError("weights_only unsupported")
+        return {"fallback": True}
+
+    monkeypatch.setattr(expert_bundle_mod.torch, "load", _fake_load)
+    out = expert_bundle_mod._load_torch_weights("/tmp/legacy.pt", map_location="cpu")
+    assert out == {"fallback": True}
+    assert len(calls) == 2
+    assert calls[0]["weights_only"] is True
+    assert "weights_only" not in calls[1]

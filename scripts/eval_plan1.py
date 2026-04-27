@@ -5,6 +5,17 @@ import sys
 sys.path.append(os.path.join(os.path.dirname(__file__), ".."))
 
 
+def _as_bool(v):
+    if isinstance(v, bool):
+        return v
+    s = str(v).strip().lower()
+    if s in {"1", "true", "yes", "y"}:
+        return True
+    if s in {"0", "false", "no", "n"}:
+        return False
+    raise argparse.ArgumentTypeError(f"Expected bool-like value, got: {v}")
+
+
 def parse_args():
     p = argparse.ArgumentParser(description="Plan 1: evaluate semantic evidence injection + baselines")
     p.add_argument("--server_models_path", type=str, default="/disk1/lfhu/hf_cache")
@@ -42,6 +53,14 @@ def parse_args():
     p.add_argument("--tune_layernorm", type=int, default=0, choices=[0, 1])
     p.add_argument("--inject_location", type=str, default="layer_input", choices=["layer_input"])
     p.add_argument("--fusion_policy", type=str, default="post_attn_router_parallel", choices=["post_attn_router_parallel"])
+    p.add_argument("--use_pre_router", type=_as_bool, default=False)
+    p.add_argument("--pre_router_mode", type=str, default="global_feature", choices=["global", "feature", "global_feature"])
+    p.add_argument("--pre_router_hidden_dim", type=int, default=128)
+    p.add_argument("--task_conditioning", type=_as_bool, default=False)
+    p.add_argument("--pre_router_task_embedding_dim", type=int, default=16)
+    p.add_argument("--pre_router_max_task_ids", type=int, default=32)
+    p.add_argument("--out_csv", type=str, default=None)
+    p.add_argument("--out_json", type=str, default=None)
     p.add_argument("--enforce_checkpoint_compat", type=int, default=1, choices=[0, 1])
     p.add_argument("--load_in_4bit", type=int, default=0, choices=[0, 1])
     p.add_argument("--bnb_4bit_compute_dtype", type=str, default="bfloat16", choices=["bfloat16", "float16", "float32"])
@@ -91,6 +110,14 @@ if __name__ == "__main__":
         tune_layernorm=bool(a.tune_layernorm),
         inject_location=a.inject_location,
         fusion_policy=a.fusion_policy,
+        use_pre_router=a.use_pre_router,
+        pre_router_mode=a.pre_router_mode,
+        pre_router_hidden_dim=a.pre_router_hidden_dim,
+        task_conditioning=a.task_conditioning,
+        pre_router_task_embedding_dim=a.pre_router_task_embedding_dim,
+        pre_router_max_task_ids=a.pre_router_max_task_ids,
+        out_csv=a.out_csv,
+        out_json=a.out_json,
         enforce_checkpoint_compat=bool(a.enforce_checkpoint_compat),
         load_in_4bit=bool(a.load_in_4bit),
         bnb_4bit_compute_dtype=a.bnb_4bit_compute_dtype,

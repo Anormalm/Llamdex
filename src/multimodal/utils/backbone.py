@@ -32,7 +32,8 @@ def _exists_in_hf_cache(cache_dir: str, model_id: str) -> bool:
                     if os.path.isfile(os.path.join(s, "config.json")):
                         return True
             except Exception:
-                return True
+                # Avoid false cache-hit signals on transient/permission errors.
+                continue
     return False
 
 

@@ -55,7 +55,7 @@ def test_run_task_matrix_emits_rows_for_unified_baselines(monkeypatch, tmp_path)
         "_attach_connector",
         lambda cfg, model, baseline_mode: None
         if baseline_mode in {"llm_only", "text_prompt_only"}
-        else _DummyRuntime(runner._fusion_policy_for_mode(baseline_mode)),
+        else _DummyRuntime(runner._fusion_policy_for_mode(cfg, baseline_mode)),
     )
     monkeypatch.setattr(runner, "_build_task_loaders", lambda task, tokenizer, data_root, seed: (["train"], ["eval"]))
     monkeypatch.setattr(runner, "_train_connector", lambda *args, **kwargs: None)
@@ -76,7 +76,7 @@ def test_run_task_matrix_emits_rows_for_unified_baselines(monkeypatch, tmp_path)
     assert [r["baseline_mode"] for r in rows] == ["llm_only", "text_prompt_only", "overwrite", "router_parallel"]
     assert rows[0]["k"] == 0
     assert rows[2]["fusion_policy"] == "pre_attn_overwrite"
-    assert rows[3]["fusion_policy"] == "post_attn_router_parallel"
+    assert rows[3]["fusion_policy"] == "pre_ffn_router_parallel"
     assert "baseline_note" in rows[1]
 
 
@@ -176,6 +176,37 @@ def test_run_task_matrix_router_parallel_respects_post_attn_layers_policy(monkey
     )
     rows = run_task_matrix(cfg)
     assert rows[0]["fusion_policy"] == "post_attn_router_layers"
+
+
+def test_run_task_matrix_router_parallel_hybrid_routes_by_task(monkeypatch, tmp_path):
+    import src.multimodal.task_matrix.runner as runner
+
+    monkeypatch.setattr(runner, "_build_model_tokenizer", lambda cfg: (_DummyModel(), object()))
+    monkeypatch.setattr(runner, "_attach_connector", lambda cfg, model, baseline_mode: None)
+    monkeypatch.setattr(runner, "_build_task_loaders", lambda task, tokenizer, data_root, seed: (["train"], ["eval"]))
+    monkeypatch.setattr(runner, "_train_connector", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_eval_task",
+        lambda model, runtime, tokenizer, eval_loader, task, cfg, device, baseline_mode: {"accuracy": 0.5},
+    )
+
+    cfg = TaskMatrixConfig(
+        baseline_modes=["router_parallel"],
+        fusion_policy="hybrid_task_routed",
+        tasks=[
+            TaskSpec(name="finegrained", train_steps=0, max_train_samples=1, max_eval_samples=1, batch_size=1),
+            TaskSpec(name="grounded_generation", train_steps=0, max_train_samples=1, max_eval_samples=1, batch_size=1),
+        ],
+        out_csv=str(tmp_path / "rows.csv"),
+        out_json=str(tmp_path / "rows.json"),
+        device="cpu",
+    )
+    rows = run_task_matrix(cfg)
+    assert rows[0]["task"] == "finegrained"
+    assert rows[0]["fusion_policy"] == "pre_ffn_router_parallel"
+    assert rows[1]["task"] == "grounded_generation"
+    assert rows[1]["fusion_policy"] == "post_attn_router_layers"
 
 
 def test_run_task_matrix_vqa_rows_report_hf_dataset_name(monkeypatch, tmp_path):
@@ -375,6 +406,15 @@ def test_suppress_hf_auto_conversion_noise_patches_transformers_symbols():
     assert safetensors_conversion.auto_conversion is original_safetensors
 
 
+def test_save_rows_supports_filename_only_outputs(monkeypatch, tmp_path):
+    import src.multimodal.task_matrix.runner as runner
+
+    monkeypatch.chdir(tmp_path)
+    runner._save_rows([{"task": "finegrained", "metric": 1.0}], "rows.csv", "rows.json")
+    assert (tmp_path / "rows.csv").exists()
+    assert (tmp_path / "rows.json").exists()
+
+
 def test_build_lr_scheduler_warmup_then_cosine_decay():
     import src.multimodal.task_matrix.runner as runner
 
@@ -392,3 +432,46 @@ def test_build_lr_scheduler_warmup_then_cosine_decay():
     assert vals[0] >= 0.5
     assert vals[1] >= vals[0]
     assert vals[-1] < vals[2]
+
+
+def test_task_ids_for_batch_handles_collated_task_name_lists():
+    import src.multimodal.task_matrix.runner as runner
+
+    cfg = runner.TaskMatrixConfig(task_conditioning=True, pre_router_max_task_ids=32)
+    batch = {
+        "prompt_tokens": torch.zeros((3, 5), dtype=torch.long),
+        "task_name": ["finegrained", "finegrained", "finegrained"],
+    }
+    task_ids = runner._task_ids_for_batch(cfg, batch, device=torch.device("cpu"))
+    expected = runner.task_name_to_id("finegrained", max_task_ids=32)
+    assert task_ids is not None
+    assert task_ids.shape == (3,)
+    assert torch.all(task_ids == expected)
+
+
+def test_annotate_joint_scores_applies_latency_format_and_instability_penalties():
+    import src.multimodal.task_matrix.runner as runner
+
+    cfg = runner.TaskMatrixConfig(
+        joint_score_latency_weight=0.1,
+        joint_score_format_weight=0.2,
+        joint_score_instability_weight=0.3,
+    )
+    rows = [
+        {
+            "task": "grounded_generation",
+            "metric_name": "accuracy",
+            "accuracy": 0.8,
+            "format_compliance": 0.75,
+            "latency_ms_per_sample": 200.0,
+            "metric_std": 0.1,
+        }
+    ]
+    out = runner._annotate_joint_scores(rows, cfg)
+    row = out[0]
+    assert row["quality_score"] == 0.8
+    assert row["format_fail_rate"] == 0.25
+    assert row["latency_s_per_sample"] == 0.2
+    assert row["instability_penalty"] == 0.1
+    # 0.8 - (0.1*0.2) - (0.2*0.25) - (0.3*0.1) = 0.70
+    assert abs(row["joint_score"] - 0.7) < 1e-9

@@ -85,6 +85,13 @@ def test_extract_answer_rationale_prefers_latest_match():
     assert rat == "braided woven texture."
 
 
+def test_extract_answer_rationale_parses_json_payload():
+    text = 'prefix {"answer":"C","rationale":"woven rough texture"} suffix'
+    ans, rat = runner._extract_answer_rationale(text)
+    assert ans == "C"
+    assert rat == "woven rough texture"
+
+
 def test_canonicalize_grounded_output_falls_back_to_predicted_code():
     text = "braided woven texture pattern."
     out = runner._canonicalize_grounded_output(text, "A")
