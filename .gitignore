@@ -60,3 +60,9 @@ Nebius_APIkey
 
 # Notebook artifacts
 .ipynb_checkpoints/
+
+# Local/large artifacts that should not be published
+.codex
+playbook.md
+*.pptx
+*.png
