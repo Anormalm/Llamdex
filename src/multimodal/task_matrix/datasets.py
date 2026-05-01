@@ -628,7 +628,12 @@ class StrictYesNoPetDataset(FineGrainedPetDataset):
     def __getitem__(self, idx):
         i = self.indices[idx]
         image, label = self.ds[i]
-        target_cls = self.rng.randrange(len(self.class_names))
+        if self.rng.random() < 0.5 or len(self.class_names) <= 1:
+            target_cls = int(label)
+        else:
+            target_cls = self.rng.randrange(len(self.class_names) - 1)
+            if target_cls >= int(label):
+                target_cls += 1
         answer_is_yes = int(label) == int(target_cls)
         if self.prompt_template_style == "compact":
             p = _dataset_prompt_tokens(self.dataset_name)

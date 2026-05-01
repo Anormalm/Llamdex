@@ -7,7 +7,7 @@ class _DummyRuntime:
     def __init__(self, policy_name: str):
         self.inject_via_layer = policy_name == "pre_attn_overwrite"
         self.semantic_expert = torch.nn.Linear(1, 1)
-        self.fusion_policy = type("Policy", (), {"policy_name": policy_name, "to": lambda self, device: self})()
+        self.fusion_policy = type("Policy", (), {"policy_name": policy_name, "to": lambda self, *args, **kwargs: self})()
 
 
 class _DummyModel:
@@ -49,38 +49,79 @@ class _DummyHookableModel(_DummyModel):
 def test_run_task_matrix_emits_rows_for_unified_baselines(monkeypatch, tmp_path):
     import src.multimodal.task_matrix.runner as runner
 
+    attach_calls = []
+    train_calls = []
+    eval_calls = []
+
+    def attach_connector(cfg, model, baseline_mode):
+        attach_calls.append(baseline_mode)
+        if baseline_mode in {"llm_only", "text_prompt_only"}:
+            return None
+        return _DummyRuntime(runner._fusion_policy_for_mode(cfg, baseline_mode))
+
+    def train_connector(model, runtime, train_loader, task, cfg, device, baseline_mode):
+        train_calls.append((baseline_mode, id(runtime) if runtime is not None else None))
+
+    def eval_task(model, runtime, tokenizer, eval_loader, task, cfg, device, baseline_mode):
+        eval_calls.append((baseline_mode, id(runtime) if runtime is not None else None))
+        return {"accuracy": 0.5 if runtime is None else 0.75}
+
     monkeypatch.setattr(runner, "_build_model_tokenizer", lambda cfg: (_DummyModel(), object()))
-    monkeypatch.setattr(
-        runner,
-        "_attach_connector",
-        lambda cfg, model, baseline_mode: None
-        if baseline_mode in {"llm_only", "text_prompt_only"}
-        else _DummyRuntime(runner._fusion_policy_for_mode(cfg, baseline_mode)),
-    )
+    monkeypatch.setattr(runner, "_attach_connector", attach_connector)
     monkeypatch.setattr(runner, "_build_task_loaders", lambda task, tokenizer, data_root, seed: (["train"], ["eval"]))
-    monkeypatch.setattr(runner, "_train_connector", lambda *args, **kwargs: None)
-    monkeypatch.setattr(
-        runner,
-        "_eval_task",
-        lambda model, runtime, tokenizer, eval_loader, task, cfg, device, baseline_mode: {"accuracy": 0.5 if runtime is None else 0.75},
-    )
+    monkeypatch.setattr(runner, "_train_connector", train_connector)
+    monkeypatch.setattr(runner, "_eval_task", eval_task)
 
     cfg = TaskMatrixConfig(
-        baseline_modes=["llm_only", "text_prompt_only", "overwrite", "router_parallel"],
+        baseline_modes=[
+            "llm_only",
+            "text_prompt_only",
+            "overwrite",
+            "router_parallel",
+            "shuffled_router_parallel",
+            "zeroed_router_parallel",
+        ],
         tasks=[TaskSpec(name="finegrained", train_steps=0, max_train_samples=1, max_eval_samples=1, batch_size=1)],
         out_csv=str(tmp_path / "rows.csv"),
         out_json=str(tmp_path / "rows.json"),
         device="cpu",
     )
     rows = run_task_matrix(cfg)
-    assert [r["baseline_mode"] for r in rows] == ["llm_only", "text_prompt_only", "overwrite", "router_parallel"]
+    assert [r["baseline_mode"] for r in rows] == [
+        "llm_only",
+        "text_prompt_only",
+        "overwrite",
+        "router_parallel",
+        "shuffled_router_parallel",
+        "zeroed_router_parallel",
+    ]
     assert rows[0]["k"] == 0
     assert rows[2]["fusion_policy"] == "pre_attn_overwrite"
     assert rows[3]["fusion_policy"] == "pre_ffn_router_parallel"
+    assert rows[4]["fusion_policy"] == "pre_ffn_router_parallel"
+    assert rows[5]["fusion_policy"] == "pre_ffn_router_parallel"
+    assert "shuffled" in rows[4]["baseline_note"]
+    assert "zeroed" in rows[5]["baseline_note"]
     assert "baseline_note" in rows[1]
+    assert attach_calls == ["llm_only", "text_prompt_only", "overwrite", "router_parallel"]
+    assert [m for m, _ in train_calls] == ["llm_only", "text_prompt_only", "overwrite", "router_parallel"]
+    router_runtime_ids = {runtime_id for mode, runtime_id in eval_calls if mode in {"router_parallel", "shuffled_router_parallel", "zeroed_router_parallel"}}
+    assert len(router_runtime_ids) == 1
 
 
-def test_run_task_matrix_rejects_expert_only(tmp_path):
+def test_run_task_matrix_accepts_expert_only_alias(monkeypatch, tmp_path):
+    import src.multimodal.task_matrix.runner as runner
+
+    monkeypatch.setattr(runner, "_build_tokenizer", lambda cfg: object())
+    monkeypatch.setattr(runner, "_attach_direct_expert", lambda cfg: _DummyRuntime("expert_direct"))
+    monkeypatch.setattr(runner, "_build_task_loaders", lambda task, tokenizer, data_root, seed: (["train"], ["eval"]))
+    monkeypatch.setattr(runner, "_train_connector", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        runner,
+        "_eval_task",
+        lambda model, runtime, tokenizer, eval_loader, task, cfg, device, baseline_mode: {"accuracy": 0.5},
+    )
+
     cfg = TaskMatrixConfig(
         baseline_modes=["expert_only"],
         tasks=[TaskSpec(name="finegrained", train_steps=0, max_train_samples=1, max_eval_samples=1, batch_size=1)],
@@ -88,12 +129,9 @@ def test_run_task_matrix_rejects_expert_only(tmp_path):
         out_json=str(tmp_path / "rows.json"),
         device="cpu",
     )
-    try:
-        run_task_matrix(cfg)
-    except ValueError as exc:
-        assert "expert_only baseline has been removed" in str(exc)
-    else:
-        raise AssertionError("Expected expert_only to be rejected.")
+    rows = run_task_matrix(cfg)
+    assert rows[0]["baseline_mode"] == "expert_direct"
+    assert rows[0]["fusion_policy"] == "expert_direct"
 
 
 def test_run_task_matrix_repeat_seeds_emits_aggregate_row(monkeypatch, tmp_path):

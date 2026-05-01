@@ -49,7 +49,15 @@ from src.multimodal.tasks.parsing import parse_population_answer, population_bin
 from src.multimodal.utils.repro import set_seed
 
 
-BASELINE_MODES = {"llm_only", "text_prompt_only", "overwrite", "router_parallel", "expert_direct"}
+BASELINE_MODES = {
+    "llm_only",
+    "text_prompt_only",
+    "overwrite",
+    "router_parallel",
+    "shuffled_router_parallel",
+    "zeroed_router_parallel",
+    "expert_direct",
+}
 
 
 @dataclass
@@ -198,6 +206,12 @@ def _normalize_baseline_modes(modes: List[str]) -> List[str]:
         "post_attn_router_parallel": "router_parallel",
         "post_attn_router_layers": "router_parallel",
         "post_attn_router_all_layers": "router_parallel",
+        "router_parallel_shuffled": "shuffled_router_parallel",
+        "shuffled_evidence": "shuffled_router_parallel",
+        "shuffled_router": "shuffled_router_parallel",
+        "router_parallel_zeroed": "zeroed_router_parallel",
+        "zeroed_evidence": "zeroed_router_parallel",
+        "zeroed_router": "zeroed_router_parallel",
         "classifier_direct": "expert_direct",
         "vision_direct": "expert_direct",
     }
@@ -218,7 +232,7 @@ def _fusion_policy_for_mode(cfg: TaskMatrixConfig, mode: str) -> str:
         return "expert_direct"
     if mode == "overwrite":
         return "pre_attn_overwrite"
-    if mode == "router_parallel":
+    if mode in {"router_parallel", "shuffled_router_parallel", "zeroed_router_parallel"}:
         preferred = str(getattr(cfg, "fusion_policy", "post_attn_router_parallel")).strip().lower()
         if preferred == "hybrid_task_routed":
             return "pre_ffn_router_parallel"
@@ -229,7 +243,7 @@ def _fusion_policy_for_mode(cfg: TaskMatrixConfig, mode: str) -> str:
 
 
 def _resolve_cfg_for_task(cfg: TaskMatrixConfig, task: TaskSpec, baseline_mode: str) -> TaskMatrixConfig:
-    if baseline_mode != "router_parallel":
+    if baseline_mode not in {"router_parallel", "shuffled_router_parallel", "zeroed_router_parallel"}:
         return cfg
     preferred = str(getattr(cfg, "fusion_policy", "post_attn_router_parallel")).strip().lower()
     if preferred != "hybrid_task_routed":
@@ -261,14 +275,19 @@ def _build_model_tokenizer(cfg: TaskMatrixConfig):
         )
         if tokenizer.pad_token is None:
             tokenizer.pad_token = tokenizer.unk_token
+        model_kwargs = {
+            "config": model_config,
+            "generation_config": GenerationConfig.from_model_config(model_config),
+            "cache_dir": cfg.server_models_path,
+            "torch_dtype": torch.bfloat16 if torch.cuda.is_available() else torch.float32,
+            "tokenizer": tokenizer,
+            "local_files_only": local_files_only,
+        }
+        if local_files_only:
+            model_kwargs["use_safetensors"] = False
         model = DomainQwenForCausalLM.from_pretrained_qwen(
             cfg.model_name,
-            config=model_config,
-            generation_config=GenerationConfig.from_model_config(model_config),
-            cache_dir=cfg.server_models_path,
-            torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
-            tokenizer=tokenizer,
-            local_files_only=local_files_only,
+            **model_kwargs,
         )
     model.num_tokens = cfg.num_tokens
     model.generation_config.pad_token_id = tokenizer.pad_token_id
@@ -655,6 +674,29 @@ def _set_router_context_if_needed(runtime: Optional[RuntimeConnector], expert_in
     return True
 
 
+def _shuffle_expert_input(expert_input):
+    if not torch.is_tensor(expert_input) or expert_input.size(0) <= 1:
+        return expert_input
+    return expert_input.roll(shifts=1, dims=0)
+
+
+def _zero_expert_input(expert_input):
+    if not torch.is_tensor(expert_input):
+        return expert_input
+    return torch.zeros_like(expert_input)
+
+
+def _expert_input_for_mode(batch: Dict, device: torch.device, expert_type: str, baseline_mode: str):
+    if baseline_mode in {"llm_only", "text_prompt_only"}:
+        return None
+    expert_input = _expert_input_from_batch(batch, device, expert_type)
+    if baseline_mode == "shuffled_router_parallel":
+        expert_input = _shuffle_expert_input(expert_input)
+    elif baseline_mode == "zeroed_router_parallel":
+        expert_input = _zero_expert_input(expert_input)
+    return expert_input
+
+
 def _forward_logits_for_batch(
     model,
     runtime: Optional[RuntimeConnector],
@@ -665,7 +707,7 @@ def _forward_logits_for_batch(
 ) -> torch.Tensor:
     tokens = batch["prompt_tokens"].to(device)
     mask = batch["prompt_mask"].to(device)
-    expert_input = None if baseline_mode in {"llm_only", "text_prompt_only"} else _expert_input_from_batch(batch, device, cfg.expert_type)
+    expert_input = _expert_input_for_mode(batch, device, cfg.expert_type, baseline_mode)
     policy_name = getattr(runtime.fusion_policy, "policy_name", "") if runtime is not None else ""
     task_ids = _task_ids_for_batch(cfg, batch, device) if runtime is not None else None
     _set_expert_task_context(runtime, task_ids)
@@ -684,7 +726,7 @@ def _forward_logits_for_batch(
             runtime.fusion_policy.clear_context()
         _set_expert_task_context(runtime, None)
     logits = model_out.logits[:, -1, :]
-    if baseline_mode == "router_parallel" and runtime is not None:
+    if baseline_mode in {"router_parallel", "shuffled_router_parallel", "zeroed_router_parallel"} and runtime is not None:
         logits = _apply_fusion_policy(
             model=model,
             runtime=runtime,
@@ -1016,13 +1058,17 @@ def _eval_task(
                 pop_true.extend(true_f)
 
             if task.name == "grounded_generation":
+                generation_expert_input = _expert_input_for_mode(batch, device, cfg.expert_type, baseline_mode)
                 for i in range(tokens.size(0)):
                     if runtime is None:
                         continue
                     pred_code = _normalize_code_text(tokenizer.decode([int(pred_ids[i].item())]))
-                    exp_in = _expert_input_from_batch(
-                        {"images": batch["images"][i : i + 1]}, device, cfg.expert_type
-                    )
+                    if torch.is_tensor(generation_expert_input):
+                        exp_in = generation_expert_input[i : i + 1]
+                    else:
+                        exp_in = _expert_input_from_batch(
+                            {"images": batch["images"][i : i + 1]}, device, cfg.expert_type
+                        )
                     gen = _generate_rationale(
                         model,
                         runtime,
@@ -1239,13 +1285,37 @@ def run_task_matrix(cfg: TaskMatrixConfig) -> List[Dict]:
     for seed_idx, run_seed in enumerate(run_seeds):
         set_seed(run_seed)
         for i, task in enumerate(cfg.tasks):
+            shared_router_eval = None
             for baseline_mode in baseline_modes:
                 cfg_run = _resolve_cfg_for_task(cfg, task, baseline_mode)
                 try:
-                    if baseline_mode == "expert_direct":
+                    if baseline_mode in {"router_parallel", "shuffled_router_parallel", "zeroed_router_parallel"}:
+                        if shared_router_eval is None:
+                            model, tokenizer = _build_model_tokenizer(cfg_run)
+                            runtime = _attach_connector(cfg_run, model, "router_parallel")
+                            model_dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+                            if device.type == "cuda":
+                                model = model.to(dtype=model_dtype).to(device=device)
+                            else:
+                                model = model.to(device=device, dtype=model_dtype)
+                            if runtime is not None:
+                                runtime_dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+                                runtime.semantic_expert = runtime.semantic_expert.to(device=device, dtype=runtime_dtype)
+                                runtime.fusion_policy = runtime.fusion_policy.to(device=device, dtype=runtime_dtype)
+                            train_loader, eval_loader = _build_task_loaders(task, tokenizer, cfg_run.data_root, run_seed + i)
+                            _train_connector(model, runtime, train_loader, task, cfg_run, device, "router_parallel")
+                            shared_router_eval = (model, tokenizer, runtime, eval_loader)
+                        else:
+                            model, tokenizer, runtime, eval_loader = shared_router_eval
+                    elif baseline_mode == "expert_direct":
                         model = None
                         tokenizer = _build_tokenizer(cfg_run)
                         runtime = _attach_direct_expert(cfg_run)
+                        if runtime is not None:
+                            runtime_dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+                            runtime.semantic_expert = runtime.semantic_expert.to(device=device, dtype=runtime_dtype)
+                            runtime.fusion_policy = runtime.fusion_policy.to(device=device, dtype=runtime_dtype)
+                        _, eval_loader = _build_task_loaders(task, tokenizer, cfg_run.data_root, run_seed + i)
                     else:
                         model, tokenizer = _build_model_tokenizer(cfg_run)
                         runtime = _attach_connector(cfg_run, model, baseline_mode)
@@ -1254,12 +1324,12 @@ def run_task_matrix(cfg: TaskMatrixConfig) -> List[Dict]:
                             model = model.to(dtype=model_dtype).to(device=device)
                         else:
                             model = model.to(device=device, dtype=model_dtype)
-                    if runtime is not None:
-                        runtime_dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
-                        runtime.semantic_expert = runtime.semantic_expert.to(device=device, dtype=runtime_dtype)
-                        runtime.fusion_policy = runtime.fusion_policy.to(device=device, dtype=runtime_dtype)
-                    train_loader, eval_loader = _build_task_loaders(task, tokenizer, cfg_run.data_root, run_seed + i)
-                    _train_connector(model, runtime, train_loader, task, cfg_run, device, baseline_mode)
+                        if runtime is not None:
+                            runtime_dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+                            runtime.semantic_expert = runtime.semantic_expert.to(device=device, dtype=runtime_dtype)
+                            runtime.fusion_policy = runtime.fusion_policy.to(device=device, dtype=runtime_dtype)
+                        train_loader, eval_loader = _build_task_loaders(task, tokenizer, cfg_run.data_root, run_seed + i)
+                        _train_connector(model, runtime, train_loader, task, cfg_run, device, baseline_mode)
                     metrics = _eval_task(model, runtime, tokenizer, eval_loader, task, cfg_run, device, baseline_mode)
 
                     if cfg_run.save_bundle_dir and runtime is not None:
@@ -1312,6 +1382,10 @@ def run_task_matrix(cfg: TaskMatrixConfig) -> List[Dict]:
                     }
                     if baseline_mode == "text_prompt_only":
                         row["baseline_note"] = "Prompt-only baseline over the standardized task text; no uploaded expert or injection path."
+                    if baseline_mode == "shuffled_router_parallel":
+                        row["baseline_note"] = "shuffled router-parallel ablation with eval-time evidence rolled across the batch."
+                    if baseline_mode == "zeroed_router_parallel":
+                        row["baseline_note"] = "zeroed router-parallel ablation with eval-time evidence replaced by zeros."
                     row.update(metrics)
                 except Exception as exc:
                     row = {
@@ -1321,9 +1395,13 @@ def run_task_matrix(cfg: TaskMatrixConfig) -> List[Dict]:
                         "expert_type": cfg_run.expert_type,
                         "backbone": cfg_run.model_name,
                         "fusion_policy": _fusion_policy_for_mode(cfg_run, baseline_mode),
-                        "k": cfg_run.num_tokens if baseline_mode in {"overwrite", "router_parallel"} else 0,
+                        "k": cfg_run.num_tokens
+                        if baseline_mode in {"overwrite", "router_parallel", "shuffled_router_parallel", "zeroed_router_parallel"}
+                        else 0,
                         "layer_idx": cfg_run.layer_idx,
-                        "evidence_dim": cfg_run.evidence_dim if baseline_mode in {"overwrite", "router_parallel"} else 0,
+                        "evidence_dim": cfg_run.evidence_dim
+                        if baseline_mode in {"overwrite", "router_parallel", "shuffled_router_parallel", "zeroed_router_parallel"}
+                        else 0,
                         "use_pre_router": bool(getattr(cfg_run, "use_pre_router", False)),
                         "pre_router_mode": str(getattr(cfg_run, "pre_router_mode", "global_feature")),
                         "task_conditioning": bool(getattr(cfg_run, "task_conditioning", False)),
