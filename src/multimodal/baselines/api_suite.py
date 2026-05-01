@@ -547,6 +547,12 @@ def run_api_baseline_suite(cfg: APIBaselineSuiteConfig) -> List[Dict]:
 
     datasets_to_run = list(cfg.dataset_names) if cfg.dataset_names else [cfg.dataset_name]
     rows: List[Dict] = []
+
+    def checkpoint():
+        summary = _aggregate_summary(rows)
+        _save(rows, cfg.out_csv, cfg.out_json)
+        _save(summary, cfg.out_summary_csv, cfg.out_summary_json)
+
     for dataset_name in datasets_to_run:
         if cfg.verbose:
             print(f"[api_suite] dataset={dataset_name} begin", flush=True)
@@ -555,22 +561,24 @@ def run_api_baseline_suite(cfg: APIBaselineSuiteConfig) -> List[Dict]:
                 continue
             if cfg.enable_llm_only:
                 rows.extend(_eval_with_repeats(cfg, m, mode="llm_only", dataset_name=dataset_name, tokenizer=tokenizer, model_type=f"api_llm_only::{m.name}"))
+                checkpoint()
             if cfg.enable_rag:
                 rows.extend(_eval_with_repeats(cfg, m, mode="rag", dataset_name=dataset_name, tokenizer=tokenizer, model_type=f"api_rag::{m.name}"))
+                checkpoint()
 
         for v in cfg.vlm_models:
             if not v.enabled:
                 continue
             if cfg.enable_vlm_direct:
                 rows.extend(_eval_with_repeats(cfg, v, mode="vlm_direct", dataset_name=dataset_name, tokenizer=tokenizer, model_type=f"api_frozen_vlm::{v.name}"))
+                checkpoint()
             if cfg.enable_two_stage:
                 rows.extend(_eval_with_repeats(cfg, v, mode="two_stage", dataset_name=dataset_name, tokenizer=tokenizer, model_type=f"api_two_stage::{v.name}"))
+                checkpoint()
         if cfg.verbose:
             print(f"[api_suite] dataset={dataset_name} end", flush=True)
 
-    summary = _aggregate_summary(rows)
-    _save(rows, cfg.out_csv, cfg.out_json)
-    _save(summary, cfg.out_summary_csv, cfg.out_summary_json)
+    checkpoint()
     return rows
 
 

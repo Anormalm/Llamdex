@@ -6,7 +6,21 @@ def test_dataset_registry_loads():
 
     reg = load_dataset_registry("conf/datasets.registry.json")
     names = {item["name"] for item in reg["datasets"]}
-    assert {"oxford_pet", "dtd", "gqa", "vqa_v2", "mimic_cxr_jpg", "chexpert"} <= names
+    assert {
+        "oxford_pet",
+        "dtd",
+        "gqa",
+        "vqa_v2",
+        "resisc45",
+        "fgvc_aircraft",
+        "mimic_cxr_jpg",
+        "chexpert",
+        "chexpert_plus",
+        "medical_cxr_vqa",
+        "medical_diff_vqa",
+        "private_doc_ocr_synth",
+        "privacy_risk",
+    } <= names
 
 
 def test_build_dataset_manifest_contains_required_fields():

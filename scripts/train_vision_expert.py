@@ -1,12 +1,54 @@
 import argparse
 from pathlib import Path
-from typing import Tuple
+from typing import Optional, Tuple
 
 import torch
 import torch.nn as nn
 import torch.optim as optim
+from PIL import Image
 from torch.utils.data import DataLoader
 from torchvision import datasets, models, transforms
+
+
+class HFImageClassificationDataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        dataset_name: str,
+        split: str,
+        transform,
+        cache_dir: Optional[str] = None,
+        image_field: str = "image",
+        label_field: str = "label",
+    ):
+        from datasets import ClassLabel, load_dataset
+
+        self.ds = load_dataset(dataset_name, split=split, cache_dir=cache_dir)
+        self.transform = transform
+        self.image_field = image_field
+        self.label_field = label_field
+        feature = self.ds.features[label_field]
+        if isinstance(feature, ClassLabel):
+            self.classes = list(feature.names)
+            self._label_to_idx = None
+        else:
+            labels = sorted({str(row[label_field]).strip() for row in self.ds})
+            self.classes = labels
+            self._label_to_idx = {label: i for i, label in enumerate(labels)}
+
+    def __len__(self):
+        return len(self.ds)
+
+    def __getitem__(self, idx):
+        row = self.ds[int(idx)]
+        image = row[self.image_field]
+        if not isinstance(image, Image.Image):
+            image = Image.open(image)
+        image = image.convert("RGB")
+        if self.transform is not None:
+            image = self.transform(image)
+        raw_label = row[self.label_field]
+        label = int(raw_label) if self._label_to_idx is None else self._label_to_idx[str(raw_label).strip()]
+        return image, label
 
 
 def set_seed(seed: int) -> None:
@@ -23,6 +65,10 @@ def num_classes_for_dataset(dataset_name: str) -> int:
         return 47
     if dataset_name == "oxford_pet":
         return 37
+    if dataset_name == "resisc45":
+        return 45
+    if dataset_name == "fgvc_aircraft":
+        return 100
     raise ValueError(f"Unsupported dataset: {dataset_name}")
 
 
@@ -53,7 +99,7 @@ def build_transforms(dataset_name: str, train: bool):
             ]
         )
 
-    if dataset_name in {"dtd", "oxford_pet"}:
+    if dataset_name in {"dtd", "oxford_pet", "resisc45", "fgvc_aircraft"}:
         # DTD images are variable-sized; resize to a stable input shape.
         if train:
             return transforms.Compose(
@@ -95,6 +141,14 @@ def build_datasets(dataset_name: str, data_root: str):
         train_ds = datasets.OxfordIIITPet(root=data_root, split="trainval", target_types="category", download=True, transform=train_tf)
         eval_ds = datasets.OxfordIIITPet(root=data_root, split="test", target_types="category", download=True, transform=eval_tf)
         return train_ds, eval_ds
+    if dataset_name == "resisc45":
+        train_ds = HFImageClassificationDataset("timm/resisc45", split="train", transform=train_tf, cache_dir=data_root)
+        eval_ds = HFImageClassificationDataset("timm/resisc45", split="test", transform=eval_tf, cache_dir=data_root)
+        return train_ds, eval_ds
+    if dataset_name == "fgvc_aircraft":
+        train_ds = datasets.FGVCAircraft(root=data_root, split="trainval", annotation_level="variant", download=True, transform=train_tf)
+        eval_ds = datasets.FGVCAircraft(root=data_root, split="test", annotation_level="variant", download=True, transform=eval_tf)
+        return train_ds, eval_ds
     raise ValueError(f"Unsupported dataset: {dataset_name}")
 
 
@@ -115,8 +169,13 @@ def evaluate(model: nn.Module, loader: DataLoader, device: torch.device, use_amp
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Train vision expert checkpoint for Plan-1 (CIFAR/DTD/OxfordPet)")
-    parser.add_argument("--dataset_name", type=str, default="dtd", choices=["cifar10", "cifar100", "dtd", "oxford_pet"])
+    parser = argparse.ArgumentParser(description="Train vision expert checkpoint for Plan-1 image datasets")
+    parser.add_argument(
+        "--dataset_name",
+        type=str,
+        default="dtd",
+        choices=["cifar10", "cifar100", "dtd", "oxford_pet", "resisc45", "fgvc_aircraft"],
+    )
     parser.add_argument("--data_root", type=str, default="./data")
     parser.add_argument("--out_path", type=str, default="runs/experts/dtd_resnet18_best.pt")
     parser.add_argument("--epochs", type=int, default=5)

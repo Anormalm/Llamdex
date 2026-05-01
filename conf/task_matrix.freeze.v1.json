@@ -2,20 +2,31 @@
   "version": "task-matrix-v1",
   "tracks": {
     "open": {
-      "datasets": ["oxford_pet", "dtd", "gqa", "vqa_v2"],
+      "datasets": ["oxford_pet", "dtd", "gqa", "vqa_v2", "resisc45", "fgvc_aircraft"],
       "tasks": {
-        "single_image": ["oxford_pet", "dtd"],
-        "yesno": ["gqa", "vqa_v2"],
-        "population": ["oxford_pet", "dtd"],
-        "grounded_generation": ["gqa"]
+        "single_image": ["oxford_pet", "dtd", "resisc45", "fgvc_aircraft"],
+        "yesno": ["gqa", "vqa_v2", "resisc45", "fgvc_aircraft"],
+        "population": ["oxford_pet", "dtd", "resisc45", "fgvc_aircraft"],
+        "grounded_generation": ["gqa", "resisc45", "fgvc_aircraft"]
       }
     },
     "medical": {
-      "datasets": ["mimic_cxr_jpg", "chexpert"],
+      "datasets": ["mimic_cxr_jpg", "chexpert", "chexpert_plus", "medical_cxr_vqa", "medical_diff_vqa"],
       "tasks": {
-        "single_image": ["mimic_cxr_jpg", "chexpert"],
-        "yesno": ["mimic_cxr_jpg", "chexpert"],
-        "grounded_generation": ["mimic_cxr_jpg", "chexpert"]
+        "single_image": ["mimic_cxr_jpg", "chexpert", "chexpert_plus"],
+        "yesno": ["mimic_cxr_jpg", "chexpert", "chexpert_plus"],
+        "population": ["mimic_cxr_jpg", "chexpert_plus"],
+        "grounded_generation": ["mimic_cxr_jpg", "chexpert", "chexpert_plus"],
+        "vqa": ["medical_cxr_vqa", "medical_diff_vqa"]
+      }
+    },
+    "private": {
+      "datasets": ["private_doc_ocr_synth", "privacy_risk"],
+      "tasks": {
+        "single_image": ["private_doc_ocr_synth", "privacy_risk"],
+        "yesno": ["private_doc_ocr_synth", "privacy_risk"],
+        "population": ["private_doc_ocr_synth", "privacy_risk"],
+        "grounded_generation": ["private_doc_ocr_synth", "privacy_risk"]
       }
     }
   },
@@ -23,12 +34,14 @@
     "single_image": "label_code",
     "yesno": "Yes/No",
     "population": "0..10 integer bin",
-    "grounded_generation": "Answer + rationale template"
+    "grounded_generation": "Answer + rationale template",
+    "vqa": "label_code"
   },
   "metrics": {
     "single_image": ["accuracy", "f1"],
     "yesno": ["accuracy", "f1"],
     "population": ["accuracy", "mae", "calibration_error"],
-    "grounded_generation": ["accuracy", "f1", "format_compliance", "rationale_consistency", "rationale_nonempty_rate"]
+    "grounded_generation": ["accuracy", "f1", "format_compliance", "rationale_consistency", "rationale_nonempty_rate"],
+    "vqa": ["accuracy", "f1"]
   }
 }

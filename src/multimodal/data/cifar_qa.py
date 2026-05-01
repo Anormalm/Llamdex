@@ -8,9 +8,9 @@ import torch
 from PIL import Image
 from torch.utils.data import Dataset
 from torchvision import transforms
-from torchvision.datasets import CIFAR10, CIFAR100, DTD, OxfordIIITPet
+from torchvision.datasets import CIFAR10, CIFAR100, DTD, EuroSAT, FGVCAircraft, Food101, OxfordIIITPet
 
-from src.multimodal.tasks.prompts import build_population_prompt, class_names_for_dataset
+from src.multimodal.tasks.prompts import build_population_prompt
 
 
 def _chat_template_to_ids(tokenizer, messages) -> torch.Tensor:
@@ -46,7 +46,14 @@ def _single_token_ids(tokenizer, text: str) -> List[int]:
 
 
 def _build_codebook(tokenizer, n_classes: int):
-    candidates = list("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()[]{}<>?/|")
+    alphabet = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    candidates = (
+        alphabet
+        + list("abcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()[]{}<>?/|")
+        + [f"{a}{b}" for a in alphabet for b in "0123456789"]
+        + [f"{a}{b}" for a in alphabet for b in alphabet]
+        + [f"{a}{b}{c}" for a in alphabet for b in alphabet for c in "0123456789"]
+    )
     code_to_token_id = {}
     idx_to_code = {}
     c = 0
@@ -79,32 +86,65 @@ class _VisionRow:
     label: int
 
 
-def _load_rows(root: str, dataset_name: str, train: bool) -> List[_VisionRow]:
+def _load_rows_and_classes(root: str, dataset_name: str, train: bool) -> tuple[List[_VisionRow], List[str]]:
     tfm = _vision_tfms()
     rows: List[_VisionRow] = []
     if dataset_name == "cifar10":
         ds = CIFAR10(root=root, train=train, download=True, transform=tfm)
         for img, y in ds:
             rows.append(_VisionRow(image=img, label=int(y)))
-        return rows
+        return rows, list(ds.classes)
     if dataset_name == "cifar100":
         ds = CIFAR100(root=root, train=train, download=True, transform=tfm)
         for img, y in ds:
             rows.append(_VisionRow(image=img, label=int(y)))
-        return rows
+        return rows, list(ds.classes)
     if dataset_name == "dtd":
         split = "train" if train else "test"
         ds = DTD(root=root, split=split, download=True, transform=tfm)
         for img, y in ds:
             rows.append(_VisionRow(image=img, label=int(y)))
-        return rows
+        return rows, list(ds.classes)
     if dataset_name == "oxford_pet":
         split = "trainval" if train else "test"
         ds = OxfordIIITPet(root=root, split=split, target_types="category", download=True, transform=tfm)
         for img, y in ds:
             rows.append(_VisionRow(image=img, label=int(y)))
-        return rows
+        return rows, list(ds.classes)
+    if dataset_name == "eurosat":
+        base = EuroSAT(root=root, download=True, transform=tfm)
+        split = int(0.8 * len(base))
+        indices = range(0, split) if train else range(split, len(base))
+        for i in indices:
+            img, y = base[int(i)]
+            rows.append(_VisionRow(image=img, label=int(y)))
+        return rows, list(base.classes)
+    if dataset_name == "food101":
+        split = "train" if train else "test"
+        ds = Food101(root=root, split=split, download=True, transform=tfm)
+        for img, y in ds:
+            rows.append(_VisionRow(image=img, label=int(y)))
+        return rows, [str(c).replace("_", " ") for c in ds.classes]
+    if dataset_name == "fgvc_aircraft":
+        split = "trainval" if train else "test"
+        ds = FGVCAircraft(root=root, split=split, annotation_level="variant", download=True, transform=tfm)
+        for img, y in ds:
+            rows.append(_VisionRow(image=img, label=int(y)))
+        return rows, list(ds.classes)
+    if dataset_name == "resisc45":
+        from src.multimodal.task_matrix.datasets import HFImageClassificationDataset
+
+        split = "train" if train else "test"
+        ds = HFImageClassificationDataset("timm/resisc45", split=split, transform=tfm, cache_dir=root)
+        for img, y in ds:
+            rows.append(_VisionRow(image=img, label=int(y)))
+        return rows, list(ds.classes)
     raise ValueError(f"Unsupported dataset_name: {dataset_name}")
+
+
+def _load_rows(root: str, dataset_name: str, train: bool) -> List[_VisionRow]:
+    rows, _ = _load_rows_and_classes(root=root, dataset_name=dataset_name, train=train)
+    return rows
 
 
 class CIFARSingleImageQADataset(Dataset):
@@ -126,8 +166,7 @@ class CIFARSingleImageQADataset(Dataset):
         self.mode = mode
         self.qa_type = qa_type
         self.effective_qa_type = qa_type
-        self.rows = _load_rows(root=root, dataset_name=dataset_name, train=train)
-        self.class_names = class_names_for_dataset(dataset_name)
+        self.rows, self.class_names = _load_rows_and_classes(root=root, dataset_name=dataset_name, train=train)
         if max_samples is not None:
             rng = random.Random(seed)
             idxs = list(range(len(self.rows)))
@@ -215,8 +254,7 @@ class CIFARPopulationDataset(Dataset):
         self.dataset_name = dataset_name
         self.group_size = int(group_size)
         self.output_mode = output_mode
-        self.rows = _load_rows(root=root, dataset_name=dataset_name, train=train)
-        self.class_names = class_names_for_dataset(dataset_name)
+        self.rows, self.class_names = _load_rows_and_classes(root=root, dataset_name=dataset_name, train=train)
         rng = random.Random(seed)
         self.groups = []
         n = len(self.rows)
@@ -306,4 +344,3 @@ def collate_population(batch: Sequence[Dict]):
         "question_text": [x["question_text"] for x in batch],
         "answer_text": [x["answer_text"] for x in batch],
     }
-

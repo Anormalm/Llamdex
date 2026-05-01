@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import csv
+import json
+import os
 import random
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Dict, List, Optional
 
 import torch
-from torch.utils.data import Dataset
+from PIL import Image, ImageOps
+from torch.utils.data import Dataset, Subset
 from torchvision import datasets, transforms
 
 
@@ -43,7 +48,14 @@ def _chat_template_tokens(tokenizer, msgs) -> torch.Tensor:
 
 
 def _build_codebook(tokenizer, n: int):
-    candidates = list("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()[]{}<>?/|")
+    alphabet = list("ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+    candidates = (
+        alphabet
+        + list("abcdefghijklmnopqrstuvwxyz0123456789!@#$%^&*()[]{}<>?/|")
+        + [f"{a}{b}" for a in alphabet for b in "0123456789"]
+        + [f"{a}{b}" for a in alphabet for b in alphabet]
+        + [f"{a}{b}{c}" for a in alphabet for b in alphabet for c in "0123456789"]
+    )
     codes = []
     code_to_tid = {}
     used = set()
@@ -71,8 +83,10 @@ class VQASubsetSpec:
     hf_dataset_name: str = "Graphcore/gqa-lxmert"
     split: str = "validation[:1024]"
     image_field: str = "image"
+    second_image_field: str = ""
     question_field: str = "question"
     answer_field: str = "answer"
+    context_field: str = ""
 
 
 class VQASubsetDataset(Dataset):
@@ -83,16 +97,26 @@ class VQASubsetDataset(Dataset):
         max_samples: Optional[int] = 512,
         seed: int = 42,
     ):
-        from datasets import load_dataset
-
         self.tokenizer = tokenizer
         self.rng = random.Random(seed)
-        self.ds = load_dataset(spec.hf_dataset_name, split=spec.split)
-        if max_samples is not None:
-            self.ds = self.ds.select(range(min(max_samples, len(self.ds))))
+        self.local_base_dir = None
+        if str(spec.hf_dataset_name).startswith("local:"):
+            path = str(spec.hf_dataset_name)[len("local:") :]
+            self.local_base_dir = str(Path(path).expanduser().parent)
+            self.ds = _read_manifest_rows(path)
+            if max_samples is not None:
+                self.ds = self.ds[: max_samples]
+        else:
+            from datasets import load_dataset
+
+            self.ds = load_dataset(spec.hf_dataset_name, split=spec.split)
+            if max_samples is not None:
+                self.ds = self.ds.select(range(min(max_samples, len(self.ds))))
         self.image_field = spec.image_field
+        self.second_image_field = spec.second_image_field
         self.question_field = spec.question_field
         self.answer_field = spec.answer_field
+        self.context_field = spec.context_field
         self.tx = transforms.Compose(
             [
                 transforms.Resize((224, 224)),
@@ -117,7 +141,10 @@ class VQASubsetDataset(Dataset):
 
     def __getitem__(self, idx):
         row = self.ds[idx]
-        img = row[self.image_field]
+        img = _load_manifest_image(row[self.image_field], base_dir=self.local_base_dir)
+        if self.second_image_field and row.get(self.second_image_field):
+            second = _load_manifest_image(row[self.second_image_field], base_dir=self.local_base_dir)
+            img = _concat_images_horizontally(img, second)
         img = self.tx(img.convert("RGB"))
         q = str(row[self.question_field]).strip()
         a = row[self.answer_field]
@@ -127,11 +154,14 @@ class VQASubsetDataset(Dataset):
         ans_idx = self.ans_to_idx.get(ans, 0)
         code = self.codes[ans_idx]
         mapping = ", ".join([f"{self.codes[i]}={w}" for i, w in enumerate(self.answer_vocab[:50])])
-        prompt = f"Question: {q} Answer with one code only. Codes: {mapping}."
+        context = ""
+        if self.context_field and row.get(self.context_field):
+            context = f"Context: {str(row[self.context_field]).strip()}\n"
+        prompt = f"{context}Question: {q} Answer with one code only. Codes: {mapping}."
         msgs = [{"role": "system", "content": "Answer with one code only."}, {"role": "user", "content": prompt}]
         tok = _chat_template_tokens(self.tokenizer, msgs)
         mask = (tok != self.tokenizer.pad_token_id).long()
-        return {
+        out = {
             "images": img,
             "prompt_tokens": tok,
             "prompt_mask": mask,
@@ -140,6 +170,137 @@ class VQASubsetDataset(Dataset):
             "task_name": "vqa",
             "allowed_token_ids": list(self.code_to_tid.values()),
         }
+        vector = row.get("tabular", row.get("semantic_vector"))
+        if vector is not None:
+            if isinstance(vector, str):
+                try:
+                    vector = json.loads(vector)
+                except json.JSONDecodeError:
+                    vector = [float(x) for x in vector.split(",") if x.strip()]
+            out["tabular"] = torch.tensor(vector, dtype=torch.float32)
+        return out
+
+
+def _read_manifest_rows(path: str) -> List[Dict]:
+    p = Path(path).expanduser()
+    if not p.is_file():
+        raise FileNotFoundError(f"Private manifest not found: {p}")
+    if p.suffix.lower() == ".jsonl":
+        rows = []
+        with open(p, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if line:
+                    rows.append(json.loads(line))
+        return rows
+    if p.suffix.lower() == ".json":
+        with open(p, "r", encoding="utf-8") as f:
+            payload = json.load(f)
+        if isinstance(payload, dict):
+            payload = payload.get("rows") or payload.get("data") or []
+        if not isinstance(payload, list):
+            raise ValueError(f"JSON manifest must contain a list of rows: {p}")
+        return [dict(r) for r in payload]
+    with open(p, "r", encoding="utf-8", newline="") as f:
+        return [dict(r) for r in csv.DictReader(f)]
+
+
+def _load_manifest_image(value, base_dir: Optional[str] = None) -> Image.Image:
+    if isinstance(value, Image.Image):
+        return value.convert("RGB")
+    path = Path(str(value)).expanduser()
+    if not path.is_absolute() and base_dir:
+        path = Path(base_dir).expanduser() / path
+    if not path.is_file():
+        raise FileNotFoundError(f"Image path in private manifest not found: {path}")
+    return Image.open(path).convert("RGB")
+
+
+def _concat_images_horizontally(left: Image.Image, right: Image.Image) -> Image.Image:
+    left = ImageOps.contain(left.convert("RGB"), (224, 224))
+    right = ImageOps.contain(right.convert("RGB"), (224, 224))
+    canvas = Image.new("RGB", (left.width + right.width, max(left.height, right.height)), color=(0, 0, 0))
+    canvas.paste(left, (0, (canvas.height - left.height) // 2))
+    canvas.paste(right, (left.width, (canvas.height - right.height) // 2))
+    return canvas
+
+
+class ManifestImageDataset(Dataset):
+    def __init__(
+        self,
+        manifest_path: str,
+        transform,
+        image_field: str = "image_path",
+        label_field: str = "label",
+        max_samples: Optional[int] = None,
+    ):
+        self.rows = _read_manifest_rows(manifest_path)
+        self.base_dir = str(Path(manifest_path).expanduser().parent)
+        if max_samples is not None:
+            self.rows = self.rows[: max_samples]
+        self.image_field = image_field
+        self.label_field = label_field
+        self.transform = transform
+        labels = [str(r[label_field]).strip() for r in self.rows]
+        self.classes = sorted(set(labels))
+        if not self.classes:
+            raise ValueError(f"Manifest has no labels in field {label_field!r}: {manifest_path}")
+        self.class_to_idx = {c: i for i, c in enumerate(self.classes)}
+
+    def __len__(self):
+        return len(self.rows)
+
+    def __getitem__(self, idx):
+        row = self.rows[idx]
+        img = _load_manifest_image(row[self.image_field], base_dir=self.base_dir)
+        if self.transform is not None:
+            img = self.transform(img)
+        label = self.class_to_idx[str(row[self.label_field]).strip()]
+        return img, label
+
+
+class HFImageClassificationDataset(Dataset):
+    def __init__(
+        self,
+        dataset_name: str,
+        split: str,
+        transform,
+        cache_dir: Optional[str] = None,
+        image_field: str = "image",
+        label_field: str = "label",
+    ):
+        from datasets import ClassLabel, load_dataset
+
+        self.ds = load_dataset(dataset_name, split=split, cache_dir=cache_dir)
+        self.transform = transform
+        self.image_field = image_field
+        self.label_field = label_field
+        feature = self.ds.features[label_field]
+        if isinstance(feature, ClassLabel):
+            self.classes = [str(name).replace("_", " ") for name in feature.names]
+            self._label_to_idx = None
+        else:
+            labels = sorted({str(row[label_field]).strip() for row in self.ds})
+            self.classes = [label.replace("_", " ") for label in labels]
+            self._label_to_idx = {label: i for i, label in enumerate(labels)}
+
+    def __len__(self):
+        return len(self.ds)
+
+    def __getitem__(self, idx):
+        row = self.ds[int(idx)]
+        image = row[self.image_field]
+        if not isinstance(image, Image.Image):
+            image = Image.open(image)
+        image = image.convert("RGB")
+        if self.transform is not None:
+            image = self.transform(image)
+        raw_label = row[self.label_field]
+        if self._label_to_idx is None:
+            label = int(raw_label)
+        else:
+            label = self._label_to_idx[str(raw_label).strip()]
+        return image, label
 
 
 def _build_image_dataset(root: str, dataset_name: str, train: bool):
@@ -162,6 +323,38 @@ def _build_image_dataset(root: str, dataset_name: str, train: bool):
     if name == "cifar10":
         ds = datasets.CIFAR10(root=root, train=train, download=True, transform=tx)
         return ds, list(ds.classes), "object class"
+    if name == "eurosat":
+        base = datasets.EuroSAT(root=root, download=True, transform=tx)
+        indices = list(range(len(base)))
+        split = int(0.8 * len(indices))
+        selected = indices[:split] if train else indices[split:]
+        return Subset(base, selected), list(base.classes), "land cover class"
+    if name == "food101":
+        split = "train" if train else "test"
+        ds = datasets.Food101(root=root, split=split, download=True, transform=tx)
+        return ds, [c.replace("_", " ") for c in ds.classes], "food dish class"
+    if name == "fgvc_aircraft":
+        split = "trainval" if train else "test"
+        ds = datasets.FGVCAircraft(root=root, split=split, annotation_level="variant", download=True, transform=tx)
+        return ds, list(ds.classes), "aircraft variant"
+    if name == "resisc45":
+        split = "train" if train else "test"
+        ds = HFImageClassificationDataset("timm/resisc45", split=split, transform=tx, cache_dir=root)
+        return ds, list(ds.classes), "remote-sensing scene class"
+    if name in {"private_manifest", "mimic_cxr_jpg", "chexpert_plus", "private_doc_ocr_synth", "privacy_risk"}:
+        split = "train" if train else "eval"
+        manifest_path = os.path.join(root, name, f"{split}.csv")
+        if not os.path.isfile(manifest_path):
+            alt = os.path.join(root, name, f"{split}.jsonl")
+            manifest_path = alt if os.path.isfile(alt) else manifest_path
+        ds = ManifestImageDataset(manifest_path=manifest_path, transform=tx)
+        task_label = {
+            "mimic_cxr_jpg": "chest X-ray label",
+            "chexpert_plus": "chest X-ray label",
+            "private_doc_ocr_synth": "document class",
+            "privacy_risk": "privacy risk class",
+        }.get(name, "private image label")
+        return ds, list(ds.classes), task_label
     raise ValueError(f"Unsupported image dataset for task matrix: {dataset_name}")
 
 
@@ -193,6 +386,69 @@ def _dataset_prompt_tokens(dataset_name: str) -> Dict[str, str]:
             "finegrained": "Classify this image into CIFAR-10 classes. Return `label_id` only. No explanation.",
             "strict_yesno": "Question: Is this image `<cifar_class>`? Return exactly one token: `Yes` or `No`.",
             "population": "In this image bag, estimate fraction of `<cifar_class>`. Return one integer in `[0..10]` only.",
+        }
+    if name == "eurosat":
+        return {
+            "schema": "EuroSAT land-cover schema",
+            "class_var": "land_cover_class",
+            "evidence_phrase": "land-cover evidence sentence",
+            "finegrained": "Classify this satellite image by land-cover type. Return `label_id` only from EuroSAT schema. No explanation.",
+            "strict_yesno": "Question: Is this satellite image `<land_cover_class>`? Return exactly one token: `Yes` or `No`.",
+            "population": "In this satellite image bag, estimate fraction of `<land_cover_class>`. Return one integer in `[0..10]` only.",
+        }
+    if name == "food101":
+        return {
+            "schema": "Food-101 dish schema",
+            "class_var": "dish_class",
+            "evidence_phrase": "dish-grounded evidence sentence",
+            "finegrained": "Classify this food image by dish category. Return `label_id` only from Food-101 schema. No explanation.",
+            "strict_yesno": "Question: Is this food image `<dish_class>`? Return exactly one token: `Yes` or `No`.",
+            "population": "In this food image bag, estimate fraction of `<dish_class>`. Return one integer in `[0..10]` only.",
+        }
+    if name == "fgvc_aircraft":
+        return {
+            "schema": "FGVC-Aircraft variant schema",
+            "class_var": "aircraft_variant",
+            "evidence_phrase": "aircraft-variant evidence sentence",
+            "finegrained": "Classify this aircraft image by variant. Return `label_id` only from FGVC-Aircraft schema. No explanation.",
+            "strict_yesno": "Question: Is this aircraft image `<aircraft_variant>`? Return exactly one token: `Yes` or `No`.",
+            "population": "In this aircraft image bag, estimate fraction of `<aircraft_variant>`. Return one integer in `[0..10]` only.",
+        }
+    if name == "resisc45":
+        return {
+            "schema": "RESISC45 remote-sensing scene schema",
+            "class_var": "scene_class",
+            "evidence_phrase": "remote-sensing scene evidence sentence",
+            "finegrained": "Classify this remote-sensing image by scene type. Return `label_id` only from RESISC45 schema. No explanation.",
+            "strict_yesno": "Question: Is this remote-sensing image `<scene_class>`? Return exactly one token: `Yes` or `No`.",
+            "population": "In this remote-sensing image bag, estimate fraction of `<scene_class>`. Return one integer in `[0..10]` only.",
+        }
+    if name in {"mimic_cxr_jpg", "chexpert_plus"}:
+        return {
+            "schema": "chest radiograph label schema",
+            "class_var": "finding_label",
+            "evidence_phrase": "radiograph-grounded evidence sentence",
+            "finegrained": "Classify this chest radiograph finding. Return `label_id` only from the local clinical label schema. No explanation.",
+            "strict_yesno": "Question: Does this chest radiograph show `<finding_label>`? Return exactly one token: `Yes` or `No`.",
+            "population": "In this chest radiograph bag, estimate fraction showing `<finding_label>`. Return one integer in `[0..10]` only.",
+        }
+    if name == "private_doc_ocr_synth":
+        return {
+            "schema": "private document schema",
+            "class_var": "document_class",
+            "evidence_phrase": "document-grounded evidence sentence",
+            "finegrained": "Classify this private document image. Return `label_id` only from the local document schema. No explanation.",
+            "strict_yesno": "Question: Is this document `<document_class>`? Return exactly one token: `Yes` or `No`.",
+            "population": "In this document image bag, estimate fraction of `<document_class>`. Return one integer in `[0..10]` only.",
+        }
+    if name == "privacy_risk":
+        return {
+            "schema": "privacy risk schema",
+            "class_var": "privacy_risk_class",
+            "evidence_phrase": "privacy-risk evidence sentence",
+            "finegrained": "Classify this image by privacy risk severity. Return `label_id` only from the local privacy schema. No explanation.",
+            "strict_yesno": "Question: Does this image contain `<privacy_risk_class>` privacy risk? Return exactly one token: `Yes` or `No`.",
+            "population": "In this image bag, estimate fraction with `<privacy_risk_class>` privacy risk. Return one integer in `[0..10]` only.",
         }
     return {
         "schema": "label schema",
@@ -398,6 +654,8 @@ class StrictYesNoPetDataset(FineGrainedPetDataset):
             "prompt_mask": mask,
             "target_token_id": torch.tensor(self.yes_id if answer_is_yes else self.no_id, dtype=torch.long),
             "label_idx": torch.tensor(1 if answer_is_yes else 0, dtype=torch.long),
+            "true_class": torch.tensor(int(label), dtype=torch.long),
+            "target_class": torch.tensor(int(target_cls), dtype=torch.long),
             "task_name": "strict_yesno",
             "allowed_token_ids": [self.yes_id, self.no_id],
         }
@@ -429,8 +687,14 @@ def collate_task_batch(batch: List[Dict]) -> Dict:
         out["images"] = torch.stack([x["images"] for x in batch], dim=0)
     if "label_idx" in batch[0]:
         out["label_idx"] = torch.stack([x["label_idx"] for x in batch], dim=0)
+    if "true_class" in batch[0]:
+        out["true_class"] = torch.stack([x["true_class"] for x in batch], dim=0)
+    if "target_class" in batch[0]:
+        out["target_class"] = torch.stack([x["target_class"] for x in batch], dim=0)
     if "answer_idx" in batch[0]:
         out["answer_idx"] = torch.stack([x["answer_idx"] for x in batch], dim=0)
+    if "tabular" in batch[0]:
+        out["tabular"] = torch.stack([x["tabular"] for x in batch], dim=0)
     if "rationale_keywords" in batch[0]:
         out["rationale_keywords"] = [x["rationale_keywords"] for x in batch]
     if "rationale_target" in batch[0]:

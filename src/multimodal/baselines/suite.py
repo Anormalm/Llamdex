@@ -75,6 +75,7 @@ class BaselineSuiteConfig:
     audit_out_jsonl: Optional[str] = None
     audit_max_rows_per_model: int = 512
     # frozen VLM
+    enable_frozen_vlms: bool = True
     frozen_vlms: List[FrozenVLMConfig] = field(default_factory=list)
     # output
     out_csv: str = "runs/baseline_suite_results.csv"
@@ -107,14 +108,18 @@ def _load_torch_weights(path: str, *, map_location: str = "cpu"):
 
 
 def _num_classes(dataset_name: str) -> int:
-    if dataset_name == "cifar10":
-        return 10
-    if dataset_name == "cifar100":
-        return 100
-    if dataset_name == "dtd":
-        return 47
-    if dataset_name == "oxford_pet":
-        return 37
+    known = {
+        "cifar10": 10,
+        "cifar100": 100,
+        "dtd": 47,
+        "oxford_pet": 37,
+        "eurosat": 10,
+        "food101": 101,
+        "fgvc_aircraft": 100,
+        "resisc45": 45,
+    }
+    if dataset_name in known:
+        return known[dataset_name]
     raise ValueError(dataset_name)
 
 
@@ -271,7 +276,7 @@ def _decode_token(tokenizer, token_id: int) -> str:
 
 
 def _build_llm(cfg: BaselineSuiteConfig, dev: torch.device):
-    tok = AutoTokenizer.from_pretrained(cfg.model_name, cache_dir=cfg.server_models_path, use_fast=False)
+    tok = _build_tokenizer(cfg)
     if tok.pad_token is None:
         tok.pad_token = tok.unk_token
     model = DomainQwenForCausalLM.from_pretrained_qwen(
@@ -288,7 +293,16 @@ def _build_llm(cfg: BaselineSuiteConfig, dev: torch.device):
     return model, tok
 
 
+def _build_tokenizer(cfg: BaselineSuiteConfig):
+    tok = AutoTokenizer.from_pretrained(cfg.model_name, cache_dir=cfg.server_models_path, use_fast=False)
+    if tok.pad_token is None:
+        tok.pad_token = tok.unk_token
+    return tok
+
+
 def _count_trainable(model) -> int:
+    if model is None:
+        return 0
     return int(sum(p.numel() for p in model.parameters() if p.requires_grad))
 
 
@@ -800,7 +814,12 @@ def run_baseline_suite(cfg: BaselineSuiteConfig) -> List[Dict]:
         os.makedirs(os.path.dirname(audit_path) or ".", exist_ok=True)
         with open(audit_path, "w", encoding="utf-8"):
             pass
-    model, tokenizer = _build_llm(cfg, dev)
+    needs_llm = bool(cfg.include_injection or cfg.enable_llm_only or cfg.enable_two_stage or cfg.enable_rag)
+    if needs_llm:
+        model, tokenizer = _build_llm(cfg, dev)
+    else:
+        model = None
+        tokenizer = _build_tokenizer(cfg)
     loader = _build_eval_loader(cfg, tokenizer)
 
     rows: List[Dict] = []
@@ -944,37 +963,43 @@ def run_baseline_suite(cfg: BaselineSuiteConfig) -> List[Dict]:
                         "traceback": traceback.format_exc(limit=5),
                     }
                 )
+            finally:
+                if dev.type == "cuda":
+                    torch.cuda.empty_cache()
 
     # 4) Frozen SOTA VLMs
-    vlms = cfg.frozen_vlms or [
-        FrozenVLMConfig(model_type="qwen25_vl", model_id="Qwen/Qwen2.5-VL-7B-Instruct", enabled=True),
-        FrozenVLMConfig(model_type="llava_onevision", model_id="llava-hf/llava-onevision-qwen2-7b-ov-hf", enabled=False),
-        FrozenVLMConfig(model_type="llama32_vision", model_id="meta-llama/Llama-3.2-11B-Vision-Instruct", enabled=False),
-        FrozenVLMConfig(model_type="internvl", model_id="OpenGVLab/InternVL2_5-8B", enabled=False, trust_remote_code=True),
-    ]
-    for v in vlms:
-        if not v.enabled:
-            continue
-        try:
-            vlm_model, vlm_processor = _load_frozen_vlm(cfg, v, dev)
-            met, lat = _evaluate_frozen_vlm(cfg, loader, tokenizer, dev, v, model=vlm_model, processor=vlm_processor)
-            rows.append(
-                {
-                    "benchmark_family": "local_baseline",
-                    "model_type": f"frozen_vlm::{v.model_type}",
-                    "task": cfg.task_family,
-                    "backbone": cfg.model_name,
-                    "dataset": cfg.dataset_name,
-                    "metric": float(met.get("accuracy", 0.0)),
-                    "metric_name": "accuracy",
-                    "params_trainable": 0,
-                    "inference_latency": float(lat),
-                    **met,
-                    "status": "ok",
-                }
-            )
-        except Exception as exc:
-            rows.append({"benchmark_family": "local_baseline", "model_type": f"frozen_vlm::{v.model_type}", "task": cfg.task_family, "backbone": cfg.model_name, "dataset": cfg.dataset_name, "metric": 0.0, "metric_name": "accuracy", "params_trainable": 0, "inference_latency": 0.0, "status": "error", "error": str(exc) or repr(exc), "traceback": traceback.format_exc(limit=5)})
+    if cfg.enable_frozen_vlms:
+        vlms = cfg.frozen_vlms or [
+            FrozenVLMConfig(model_type="qwen25_vl", model_id="Qwen/Qwen2.5-VL-7B-Instruct", enabled=True),
+            FrozenVLMConfig(model_type="llava_onevision", model_id="llava-hf/llava-onevision-qwen2-7b-ov-hf", enabled=False),
+            FrozenVLMConfig(model_type="llama32_vision", model_id="meta-llama/Llama-3.2-11B-Vision-Instruct", enabled=False),
+            FrozenVLMConfig(model_type="internvl", model_id="OpenGVLab/InternVL2_5-8B", enabled=False, trust_remote_code=True),
+        ]
+        for v in vlms:
+            if not v.enabled:
+                continue
+            try:
+                if dev.type == "cuda":
+                    torch.cuda.empty_cache()
+                vlm_model, vlm_processor = _load_frozen_vlm(cfg, v, dev)
+                met, lat = _evaluate_frozen_vlm(cfg, loader, tokenizer, dev, v, model=vlm_model, processor=vlm_processor)
+                rows.append(
+                    {
+                        "benchmark_family": "local_baseline",
+                        "model_type": f"frozen_vlm::{v.model_type}",
+                        "task": cfg.task_family,
+                        "backbone": cfg.model_name,
+                        "dataset": cfg.dataset_name,
+                        "metric": float(met.get("accuracy", 0.0)),
+                        "metric_name": "accuracy",
+                        "params_trainable": 0,
+                        "inference_latency": float(lat),
+                        **met,
+                        "status": "ok",
+                    }
+                )
+            except Exception as exc:
+                rows.append({"benchmark_family": "local_baseline", "model_type": f"frozen_vlm::{v.model_type}", "task": cfg.task_family, "backbone": cfg.model_name, "dataset": cfg.dataset_name, "metric": 0.0, "metric_name": "accuracy", "params_trainable": 0, "inference_latency": 0.0, "status": "error", "error": str(exc) or repr(exc), "traceback": traceback.format_exc(limit=5)})
 
     # 5) Optional RAG baseline
     if cfg.enable_rag:

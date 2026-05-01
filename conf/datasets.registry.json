@@ -62,9 +62,39 @@
       }
     },
     {
+      "name": "resisc45",
+      "track": "open",
+      "tasks": ["single_image", "yesno", "population", "grounded_generation"],
+      "download_mode": "huggingface",
+      "source_url": "https://huggingface.co/datasets/timm/resisc45",
+      "license": "unknown",
+      "access": "public",
+      "ingest_contract": {
+        "modality": "image",
+        "label_type": "single_label",
+        "split_policy": "hf_train_validation_test",
+        "notes": "Remote-sensing scene classification with 45 classes; useful as a harder geospatial complement to EuroSAT."
+      }
+    },
+    {
+      "name": "fgvc_aircraft",
+      "track": "open",
+      "tasks": ["single_image", "yesno", "population", "grounded_generation"],
+      "download_mode": "torchvision",
+      "source_url": "https://www.robots.ox.ac.uk/~vgg/data/fgvc-aircraft/",
+      "license": "dataset-specific",
+      "access": "public",
+      "ingest_contract": {
+        "modality": "image",
+        "label_type": "single_label",
+        "split_policy": "trainval/test",
+        "notes": "Fine-grained aircraft variant classification with 100 variants; useful as an object-level complement to Oxford Pets/Food101."
+      }
+    },
+    {
       "name": "mimic_cxr_jpg",
       "track": "medical",
-      "tasks": ["single_image", "yesno", "grounded_generation"],
+      "tasks": ["single_image", "yesno", "population", "grounded_generation"],
       "download_mode": "manual",
       "source_url": "https://physionet.org/content/mimic-cxr-jpg/2.1.0/",
       "license": "credentialed",
@@ -89,6 +119,81 @@
         "label_type": "multi_label_derived",
         "split_policy": "official",
         "notes": "Medical imaging benchmark with paired report metadata depending on release variant."
+      }
+    },
+    {
+      "name": "chexpert_plus",
+      "track": "medical",
+      "tasks": ["single_image", "yesno", "population", "grounded_generation"],
+      "download_mode": "manual",
+      "source_url": "https://aimi.stanford.edu/datasets/chexpert-plus",
+      "license": "credentialed",
+      "access": "manual_registration",
+      "ingest_contract": {
+        "modality": "image_text",
+        "label_type": "single_label_or_multi_label_derived",
+        "split_policy": "official_or_local_manifest",
+        "notes": "Keep DICOM/JPG images and reports outside git. Stage train/eval CSV or JSONL manifests with image_path,label columns."
+      }
+    },
+    {
+      "name": "medical_cxr_vqa",
+      "track": "medical",
+      "tasks": ["vqa"],
+      "download_mode": "manual",
+      "source_url": "https://physionet.org/content/medical-cxr-vqa-dataset/",
+      "license": "credentialed",
+      "access": "credentialed",
+      "ingest_contract": {
+        "modality": "image_text",
+        "label_type": "qa",
+        "split_policy": "local_manifest",
+        "notes": "Stage local train/eval JSONL or CSV manifests with image_path,question,answer fields."
+      }
+    },
+    {
+      "name": "medical_diff_vqa",
+      "track": "medical",
+      "tasks": ["vqa"],
+      "download_mode": "manual",
+      "source_url": "https://physionet.org/content/medical-diff-vqa/",
+      "license": "credentialed",
+      "access": "credentialed",
+      "ingest_contract": {
+        "modality": "paired_image_text",
+        "label_type": "qa",
+        "split_policy": "local_manifest",
+        "notes": "Stage local train/eval manifests with image_path,second_image_path,question,answer fields."
+      }
+    },
+    {
+      "name": "private_doc_ocr_synth",
+      "track": "private",
+      "tasks": ["single_image", "yesno", "population", "grounded_generation"],
+      "download_mode": "manual",
+      "source_url": "https://huggingface.co/datasets/Voxel51/high-quality-invoice-images-for-ocr",
+      "license": "dataset-specific",
+      "access": "public_synthetic_or_owner_controlled",
+      "ingest_contract": {
+        "modality": "document_image_text",
+        "label_type": "single_label_or_qa",
+        "split_policy": "local_manifest",
+        "notes": "Use synthetic invoices or owner-controlled documents as a privacy-safe proxy for OCR/document understanding."
+      }
+    },
+    {
+      "name": "privacy_risk",
+      "track": "private",
+      "tasks": ["single_image", "yesno", "population", "grounded_generation"],
+      "download_mode": "manual",
+      "source_url": "https://huggingface.co/datasets/timtsapras23/CPRT-Bench",
+      "license": "dataset-specific",
+      "access": "public_benchmark_or_owner_controlled",
+      "ingest_contract": {
+        "modality": "image_text",
+        "label_type": "privacy_risk",
+        "split_policy": "local_manifest",
+        "notes": "Use for privacy severity classification/calibration; do not store raw sensitive images in git."
       }
     }
   ]

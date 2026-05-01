@@ -49,7 +49,7 @@ from src.multimodal.tasks.parsing import parse_population_answer, population_bin
 from src.multimodal.utils.repro import set_seed
 
 
-BASELINE_MODES = {"llm_only", "text_prompt_only", "overwrite", "router_parallel"}
+BASELINE_MODES = {"llm_only", "text_prompt_only", "overwrite", "router_parallel", "expert_direct"}
 
 
 @dataclass
@@ -62,10 +62,13 @@ class TaskSpec:
     batch_size: int = 8
     constrained_decoding: bool = True
     vqa_hf_dataset_name: str = "Graphcore/gqa-lxmert"
+    vqa_eval_hf_dataset_name: str = ""
     vqa_split: str = "validation[:1024]"
     vqa_image_field: str = "image"
+    vqa_second_image_field: str = ""
     vqa_question_field: str = "question"
     vqa_answer_field: str = "answer"
+    vqa_context_field: str = ""
     population_group_size: int = 8
     gen_max_new_tokens: int = 24
     gen_temperature: float = 0.7
@@ -195,12 +198,14 @@ def _normalize_baseline_modes(modes: List[str]) -> List[str]:
         "post_attn_router_parallel": "router_parallel",
         "post_attn_router_layers": "router_parallel",
         "post_attn_router_all_layers": "router_parallel",
+        "classifier_direct": "expert_direct",
+        "vision_direct": "expert_direct",
     }
     out = []
     for raw in modes or ["router_parallel"]:
         mode = aliases.get(str(raw).strip().lower(), str(raw).strip().lower())
         if mode == "expert_only":
-            raise ValueError("expert_only baseline has been removed; use llm_only, text_prompt_only, overwrite, or router_parallel.")
+            mode = "expert_direct"
         if mode not in BASELINE_MODES:
             raise ValueError(f"Unsupported baseline_mode: {raw}")
         if mode not in out:
@@ -209,6 +214,8 @@ def _normalize_baseline_modes(modes: List[str]) -> List[str]:
 
 
 def _fusion_policy_for_mode(cfg: TaskMatrixConfig, mode: str) -> str:
+    if mode == "expert_direct":
+        return "expert_direct"
     if mode == "overwrite":
         return "pre_attn_overwrite"
     if mode == "router_parallel":
@@ -262,13 +269,45 @@ def _build_model_tokenizer(cfg: TaskMatrixConfig):
             torch_dtype=torch.bfloat16 if torch.cuda.is_available() else torch.float32,
             tokenizer=tokenizer,
             local_files_only=local_files_only,
-            use_safetensors=False if local_files_only else None,
         )
     model.num_tokens = cfg.num_tokens
     model.generation_config.pad_token_id = tokenizer.pad_token_id
     for p in model.parameters():
         p.requires_grad = False
     return model, tokenizer
+
+
+def _build_tokenizer(cfg: TaskMatrixConfig):
+    local_files_only = _should_use_local_files_only(cfg)
+    if local_files_only:
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+        os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    with _suppress_hf_auto_conversion_noise(local_files_only):
+        tokenizer = AutoTokenizer.from_pretrained(
+            cfg.model_name,
+            cache_dir=cfg.server_models_path,
+            torch_dtype=torch.bfloat16,
+            use_fast=False,
+            trust_remote_code=True,
+            local_files_only=local_files_only,
+        )
+        if tokenizer.pad_token is None:
+            tokenizer.pad_token = tokenizer.unk_token
+        return tokenizer
+
+
+def _attach_direct_expert(cfg: TaskMatrixConfig) -> RuntimeConnector:
+    enc = build_expert_encoder(
+        ExpertEncoderSpec(
+            expert_type=cfg.expert_type,
+            model_id=cfg.expert_model_id,
+            model_path=cfg.expert_model_path,
+            output_dim=cfg.expert_output_dim,
+            cache_dir=cfg.server_models_path,
+            use_runtime_detector=cfg.use_runtime_detector,
+        )
+    )
+    return RuntimeConnector(semantic_expert=enc, fusion_policy=nn.Identity(), inject_via_layer=False)
 
 
 @dataclass
@@ -397,11 +436,14 @@ def _build_task_loaders(task: TaskSpec, tokenizer, data_root: str, seed: int):
             hf_dataset_name=task.vqa_hf_dataset_name,
             split=task.vqa_split,
             image_field=task.vqa_image_field,
+            second_image_field=task.vqa_second_image_field,
             question_field=task.vqa_question_field,
             answer_field=task.vqa_answer_field,
+            context_field=task.vqa_context_field,
         )
+        eval_spec = replace(spec, hf_dataset_name=task.vqa_eval_hf_dataset_name or task.vqa_hf_dataset_name)
         train_ds = VQASubsetDataset(tokenizer=tokenizer, spec=spec, max_samples=task.max_train_samples, seed=seed)
-        eval_ds = VQASubsetDataset(tokenizer=tokenizer, spec=spec, max_samples=task.max_eval_samples, seed=seed + 1)
+        eval_ds = VQASubsetDataset(tokenizer=tokenizer, spec=eval_spec, max_samples=task.max_eval_samples, seed=seed + 1)
     elif task.name == "finegrained":
         train_ds = FineGrainedPetDataset(
             root=data_root,
@@ -529,6 +571,8 @@ def _sample_next_token(
 
 def _expert_input_from_batch(batch: Dict, device: torch.device, expert_type: str):
     if expert_type in {"xgboost", "ft_transformer", "tabpfn", "tabular"}:
+        if "tabular" in batch:
+            return {"tabular": batch["tabular"].to(device).float()}
         imgs = batch["images"].to(device).float()
         if imgs.ndim == 5:
             imgs = imgs.mean(dim=1)
@@ -654,6 +698,41 @@ def _forward_logits_for_batch(
     return logits
 
 
+def _expert_direct_pred_ids(
+    runtime: RuntimeConnector,
+    batch: Dict,
+    cfg: TaskMatrixConfig,
+    device: torch.device,
+) -> torch.Tensor:
+    expert = runtime.semantic_expert
+    task_name = str(batch.get("task_name", ""))
+    allowed = list(batch.get("allowed_token_ids") or [])
+    if not allowed:
+        raise ValueError("expert_direct requires allowed_token_ids in the batch.")
+
+    if task_name == "population":
+        images = batch["images"].to(device)
+        target_cls = batch["target_class"].to(device)
+        if images.ndim != 5:
+            raise ValueError("expert_direct population expects image bags with shape [B, N, C, H, W].")
+        bsz, group = images.shape[:2]
+        logits = expert.encode(images.reshape(bsz * group, *images.shape[2:]))
+        pred_cls = logits.argmax(dim=-1).reshape(bsz, group)
+        frac = (pred_cls == target_cls.unsqueeze(1)).float().mean(dim=1)
+        bins = torch.round(frac * 10.0).long().clamp_(0, 10).cpu().tolist()
+        return torch.tensor([int(allowed[int(b)]) for b in bins], dtype=torch.long)
+
+    logits = expert.encode(_expert_input_from_batch(batch, device, cfg.expert_type))
+    pred_cls = logits.argmax(dim=-1).detach().cpu()
+
+    if task_name == "strict_yesno":
+        target_cls = batch["target_class"].cpu()
+        yes_id, no_id = int(allowed[0]), int(allowed[1])
+        return torch.tensor([yes_id if int(p) == int(t) else no_id for p, t in zip(pred_cls.tolist(), target_cls.tolist())], dtype=torch.long)
+
+    return torch.tensor([int(allowed[min(max(int(p), 0), len(allowed) - 1)]) for p in pred_cls.tolist()], dtype=torch.long)
+
+
 def _loss_on_allowed_ids(logits: torch.Tensor, targets: torch.Tensor, allowed_token_ids: Optional[List[int]]):
     if not allowed_token_ids:
         return nn.CrossEntropyLoss()(logits, targets)
@@ -677,7 +756,7 @@ def _train_connector(
     device: torch.device,
     baseline_mode: str,
 ):
-    if runtime is None:
+    if runtime is None or baseline_mode == "expert_direct":
         return
     model.train()
     runtime.semantic_expert.train(any(p.requires_grad for p in runtime.semantic_expert.parameters()))
@@ -868,7 +947,11 @@ def _eval_task(
     device: torch.device,
     baseline_mode: str,
 ) -> Dict[str, float]:
-    model.eval()
+    if model is not None:
+        model.eval()
+    if runtime is not None:
+        runtime.semantic_expert.eval()
+        runtime.fusion_policy.eval()
     total = 0
     correct = 0
     y_true = []
@@ -891,11 +974,16 @@ def _eval_task(
             t0 = time.perf_counter()
             tokens = batch["prompt_tokens"].to(device)
             mask = batch["prompt_mask"].to(device)
-            logits = _forward_logits_for_batch(model, runtime, batch, cfg, device, baseline_mode)
-            if task.constrained_decoding and batch.get("allowed_token_ids"):
-                pred_ids = _constrained_argmax(logits, batch["allowed_token_ids"]).cpu()
+            if baseline_mode == "expert_direct":
+                if runtime is None:
+                    raise ValueError("expert_direct requires a runtime expert.")
+                pred_ids = _expert_direct_pred_ids(runtime, batch, cfg, device)
             else:
-                pred_ids = logits.argmax(dim=-1).cpu()
+                logits = _forward_logits_for_batch(model, runtime, batch, cfg, device, baseline_mode)
+                if task.constrained_decoding and batch.get("allowed_token_ids"):
+                    pred_ids = _constrained_argmax(logits, batch["allowed_token_ids"]).cpu()
+                else:
+                    pred_ids = logits.argmax(dim=-1).cpu()
 
             targets = batch["target_token_id"].cpu()
             correct += (pred_ids == targets).sum().item()
@@ -1154,9 +1242,18 @@ def run_task_matrix(cfg: TaskMatrixConfig) -> List[Dict]:
             for baseline_mode in baseline_modes:
                 cfg_run = _resolve_cfg_for_task(cfg, task, baseline_mode)
                 try:
-                    model, tokenizer = _build_model_tokenizer(cfg_run)
-                    runtime = _attach_connector(cfg_run, model, baseline_mode)
-                    model = model.to(device).to(torch.bfloat16 if device.type == "cuda" else torch.float32)
+                    if baseline_mode == "expert_direct":
+                        model = None
+                        tokenizer = _build_tokenizer(cfg_run)
+                        runtime = _attach_direct_expert(cfg_run)
+                    else:
+                        model, tokenizer = _build_model_tokenizer(cfg_run)
+                        runtime = _attach_connector(cfg_run, model, baseline_mode)
+                        model_dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
+                        if device.type == "cuda":
+                            model = model.to(dtype=model_dtype).to(device=device)
+                        else:
+                            model = model.to(device=device, dtype=model_dtype)
                     if runtime is not None:
                         runtime_dtype = torch.bfloat16 if device.type == "cuda" else torch.float32
                         runtime.semantic_expert = runtime.semantic_expert.to(device=device, dtype=runtime_dtype)
